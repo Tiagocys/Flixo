@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bash -lc 'set -a; [ -f ../../.env ] && . ../../.env; set +a; wrangler pages dev pages --binding BYTEPLUS_APIKEY=\"$BYTEPLUS_APIKEY\" --binding PEXELS_APIKEY=\"$PEXELS_APIKEY\" --binding PIXABAY_APIKEY=\"$PIXABAY_APIKEY\" --binding ELEVENLABS_APIKEY=\"$ELEVENLABS_APIKEY\" --binding CLOUDFLARE_ACCOUNT_ID=\"$CLOUDFLARE_ACCOUNT_ID\" --binding R2_BUCKET=\"$R2_BUCKET\" --binding R2_BUCKET_ACCESS_KEY_ID=\"$R2_BUCKET_ACCESS_KEY_ID\" --binding R2_BUCKET_SECRET_ACCESS_KEY=\"$R2_BUCKET_SECRET_ACCESS_KEY\" --binding SUPABASE_PROJECT_URL=\"$SUPABASE_PROJECT_URL\" --binding SUPABASE_URL=\"${SUPABASE_URL:-$SUPABASE_PROJECT_URL}\" --binding SUPABASE_ANON_KEY=\"$SUPABASE_ANON_KEY\" --binding SUPABASE_SERVICE_ROLE_KEY=\"$SUPABASE_SERVICE_ROLE_KEY\"'",
+    "dev": "bash -lc 'set -a; [ -f ../../.env ] && . ../../.env; set +a; wrangler pages dev pages --binding MONEYPRINTER_API_URL=\"${MONEYPRINTER_API_URL:-http://127.0.0.1:8080}\" --binding BYTEPLUS_APIKEY=\"$BYTEPLUS_APIKEY\" --binding PEXELS_APIKEY=\"$PEXELS_APIKEY\" --binding PIXABAY_APIKEY=\"$PIXABAY_APIKEY\" --binding ELEVENLABS_APIKEY=\"$ELEVENLABS_APIKEY\" --binding CLOUDFLARE_ACCOUNT_ID=\"$CLOUDFLARE_ACCOUNT_ID\" --binding R2_BUCKET=\"$R2_BUCKET\" --binding R2_BUCKET_ACCESS_KEY_ID=\"$R2_BUCKET_ACCESS_KEY_ID\" --binding R2_BUCKET_SECRET_ACCESS_KEY=\"$R2_BUCKET_SECRET_ACCESS_KEY\" --binding SUPABASE_PROJECT_URL=\"$SUPABASE_PROJECT_URL\" --binding SUPABASE_URL=\"${SUPABASE_URL:-$SUPABASE_PROJECT_URL}\" --binding SUPABASE_ANON_KEY=\"$SUPABASE_ANON_KEY\" --binding SUPABASE_SERVICE_ROLE_KEY=\"$SUPABASE_SERVICE_ROLE_KEY\"'",
     "deploy": "wrangler pages deploy pages",
     "typecheck": "tsc --noEmit"
   },
