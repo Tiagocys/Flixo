@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MoneyPrinterTurbo Cloud</title>
+    <meta
+      name="description"
+      content="Crie vídeos curtos a partir de um prompt com um fluxo simples e pronto para Cloudflare Pages."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <section class="hero">
+        <div class="eyebrow">MoneyPrinterTurbo Cloud</div>
+        <h1>Digite um tema. A pipeline faz o resto.</h1>
+        <p class="lead">
+          Roteiro, narração, busca de mídia, legendas e renderização em um fluxo
+          único, com Pages, Workers, R2 e Supabase.
+        </p>
+
+        <div class="workspace-tabs" role="tablist" aria-label="Ferramentas de criação">
+          <button
+            type="button"
+            class="workspace-tab is-active"
+            id="tab-ai"
+            data-tab="ai"
+            role="tab"
+            aria-selected="true"
+            aria-controls="panel-ai"
+          >
+            Criar vídeo com IA
+          </button>
+          <button
+            type="button"
+            class="workspace-tab"
+            id="tab-full"
+            data-tab="full"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-full"
+          >
+            Vídeo completo
+          </button>
+          <button
+            type="button"
+            class="workspace-tab"
+            id="tab-library"
+            data-tab="library"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-library"
+          >
+            Buscar vídeos por termos
+          </button>
+          <button
+            type="button"
+            class="workspace-tab"
+            id="tab-tts"
+            data-tab="tts"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-tts"
+          >
+            Criar narração
+          </button>
+          <a class="workspace-tab" href="/clipper.html">Cortar vídeo longo</a>
+          <a class="workspace-tab" href="/podcast.html">Podcast renderer</a>
+          <a class="workspace-tab" href="/youtube-download.html">Baixar YouTube</a>
+        </div>
+
+        <form id="prompt-form" class="prompt-card tab-panel" role="tabpanel" aria-labelledby="tab-ai">
+          <div id="panel-ai">
+            <label class="sr-only" for="prompt">Prompt</label>
+            <textarea
+              id="prompt"
+              name="prompt"
+              rows="4"
+              maxlength="1200"
+              placeholder="Ex: Um café artesanal sendo servido em câmera lenta, luz cinematográfica, vapor subindo da xícara."
+              autocomplete="off"
+              required
+            ></textarea>
+            <div class="generation-settings">
+              <div class="seedance-settings" id="seedance-settings">
+                <div class="field">
+                  <label for="seedance-image">Imagem opcional</label>
+                  <input
+                    id="seedance-image"
+                    name="seedanceImage"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                  />
+                </div>
+                <div class="seedance-note">
+                  Gera um clipe vertical curto para entrar na timeline.
+                </div>
+              </div>
+            </div>
+            <div class="prompt-actions">
+              <div class="helper">
+                <span class="helper-title">Criação visual</span>
+                <span>Prompt → clipe curto → R2 → timeline</span>
+              </div>
+              <button type="submit" id="submit-button">Gerar clipe</button>
+            </div>
+          </div>
+        </form>
+
+        <form
+          id="full-video-form"
+          class="prompt-card tab-panel"
+          role="tabpanel"
+          aria-labelledby="tab-full"
+          hidden
+        >
+          <div id="panel-full">
+            <label class="sr-only" for="full-video-prompt">Tema do vídeo completo</label>
+            <textarea
+              id="full-video-prompt"
+              name="fullVideoPrompt"
+              rows="4"
+              maxlength="1200"
+              placeholder="Ex: Como pequenos negócios podem usar IA para vender mais sem aumentar a equipe?"
+              autocomplete="off"
+              required
+            ></textarea>
+            <div class="generation-settings">
+              <div class="full-video-settings-grid">
+                <div class="field">
+                  <label for="full-video-voice">Voz</label>
+                  <select id="full-video-voice" name="fullVideoVoice">
+                    <option value="bella-narrative">Bella - Narrativa feminina</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="full-media-mode">Usar mídia</label>
+                  <select id="full-media-mode" name="fullMediaMode">
+                    <option value="videos" selected>Vídeos</option>
+                    <option value="images">Imagens</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="full-media-style">Estilo visual</label>
+                  <select id="full-media-style" name="fullMediaStyle">
+                    <option value="realistic" selected>Realista</option>
+                    <option value="animation">Animação/cartoon</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="full-video-aspect">Formato</label>
+                  <select id="full-video-aspect" name="fullVideoAspect">
+                    <option value="portrait">Vertical 9:16</option>
+                    <option value="square">Quadrado 1:1</option>
+                    <option value="landscape">Horizontal 16:9</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="full-subtitle-enabled">Legendas</label>
+                  <select id="full-subtitle-enabled" name="fullSubtitleEnabled">
+                    <option value="true" selected>Com legenda</option>
+                    <option value="false">Sem legenda</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="full-subtitle-position">Posição da legenda</label>
+                  <select id="full-subtitle-position" name="fullSubtitlePosition">
+                    <option value="bottom" selected>Inferior</option>
+                    <option value="center">Centro</option>
+                    <option value="top">Superior</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="full-subtitle-size">Tamanho da legenda</label>
+                  <select id="full-subtitle-size" name="fullSubtitleSize">
+                    <option value="48">Pequena</option>
+                    <option value="60" selected>Média</option>
+                    <option value="72">Grande</option>
+                    <option value="84">Extra grande</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="full-subtitle-stroke">Borda da letra</label>
+                  <select id="full-subtitle-stroke" name="fullSubtitleStroke">
+                    <option value="1">Fina</option>
+                    <option value="2" selected>Média</option>
+                    <option value="3">Grossa</option>
+                    <option value="4">Muito grossa</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="full-subtitle-stroke-color">Cor da borda</label>
+                  <input
+                    id="full-subtitle-stroke-color"
+                    name="fullSubtitleStrokeColor"
+                    type="color"
+                    value="#000000"
+                  />
+                </div>
+              </div>
+              <div class="selection-summary" id="full-selection-summary">
+                Primeiro sugira mídias pelo tema e selecione os clipes/imagens que entrarão no vídeo.
+              </div>
+              <div class="full-suggestion-actions">
+                <button type="button" class="secondary-button" id="full-suggest-button">
+                  Sugerir mídia
+                </button>
+                <span class="seedance-note">
+                  Realista usa Pexels. Cartoon/animação usa Pixabay.
+                </span>
+              </div>
+              <div class="suggestion-grid" id="full-suggestions"></div>
+            </div>
+            <div class="prompt-actions">
+              <div class="helper">
+                <span class="helper-title">Fluxo completo</span>
+                <span>tema → sugestão de mídia → seleção → narração/legenda → MP4</span>
+              </div>
+              <button type="submit" id="full-video-button">Gerar com selecionados</button>
+            </div>
+          </div>
+        </form>
+
+        <form
+          id="tts-form"
+          class="prompt-card tab-panel"
+          role="tabpanel"
+          aria-labelledby="tab-tts"
+          hidden
+        >
+          <div id="panel-tts" class="tts-panel">
+            <label class="sr-only" for="tts-text">Texto da narração</label>
+            <textarea
+              id="tts-text"
+              name="ttsText"
+              rows="4"
+              maxlength="1200"
+              placeholder="Ex: Em poucos segundos, uma ideia simples pode virar um vídeo pronto para testar nas redes."
+              autocomplete="off"
+              required
+            ></textarea>
+            <div class="generation-settings">
+              <div class="field">
+                <label for="tts-voice">Voz</label>
+                <select id="tts-voice" name="ttsVoice">
+                  <option value="bella-narrative">Bella - Narrativa feminina</option>
+                </select>
+              </div>
+            </div>
+            <div class="prompt-actions">
+              <div class="helper">
+                <span class="helper-title">Narração</span>
+                <span>Texto → MP3 → R2 → timeline</span>
+              </div>
+              <button type="submit" id="tts-button">Gerar áudio</button>
+            </div>
+          </div>
+        </form>
+
+        <form
+          id="media-search-form"
+          class="prompt-card tab-panel"
+          role="tabpanel"
+          aria-labelledby="tab-library"
+          hidden
+        >
+          <div id="panel-library" class="media-search-panel">
+            <div class="field">
+              <label for="media-query">Termo de busca</label>
+              <input
+                id="media-query"
+                name="mediaQuery"
+                maxlength="120"
+                placeholder="Ex: medieval castle, dog walking, city sunset"
+                autocomplete="off"
+                required
+              />
+            </div>
+            <div class="field">
+              <label for="media-limit">Quantidade</label>
+              <select id="media-limit" name="mediaLimit">
+                <option value="4">4 vídeos</option>
+                <option value="6" selected>6 vídeos</option>
+                <option value="8">8 vídeos</option>
+              </select>
+            </div>
+            <div class="prompt-actions">
+              <div class="helper">
+                <span class="helper-title">Biblioteca Pexels</span>
+                <span>Busca clipes verticais e salva no R2 quando disponível.</span>
+              </div>
+              <button type="submit" id="media-search-button">Buscar vídeos</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="quick-prompts" aria-label="Sugestões de prompt">
+          <button type="button" class="chip" data-prompt="Um cachorro caramelo andando por uma rua de São Paulo ao pôr do sol, câmera cinematográfica, movimento suave.">Cachorro caramelo cinematográfico</button>
+          <button type="button" class="chip" data-prompt="Um café artesanal sendo servido em câmera lenta, luz cinematográfica, vapor subindo da xícara.">Café artesanal em câmera lenta</button>
+          <button type="button" class="chip" data-search="medieval castle">Buscar: medieval castle</button>
+          <a class="chip" href="/login.html">Minha conta</a>
+        </div>
+      </section>
+
+      <section class="dashboard">
+        <div class="panel panel-summary" hidden>
+          <div class="panel-header">
+            <h2>Estado da stack</h2>
+            <div class="status-pill" id="infra-pill">Carregando...</div>
+          </div>
+          <div class="summary-grid" id="infra-grid"></div>
+        </div>
+
+        <div class="panel panel-flow" hidden>
+          <div class="panel-header">
+            <h2>Pipeline</h2>
+            <p>Uma execução simples, visível e rastreável.</p>
+          </div>
+          <div id="pipeline" class="pipeline"></div>
+        </div>
+
+        <div class="panel panel-job">
+          <div class="panel-header">
+            <h2>Último job</h2>
+            <p id="job-meta">Nenhuma execução iniciada ainda.</p>
+          </div>
+          <div id="job-detail" class="job-detail empty">
+            Digite um prompt e envie para criar sua primeira execução.
+          </div>
+        </div>
+
+        <div class="panel panel-timeline">
+          <div class="panel-header">
+            <h2>Timeline</h2>
+            <p id="timeline-meta">Até 60 segundos com clipes curtos e narração.</p>
+          </div>
+          <div id="timeline-board" class="timeline-board"></div>
+          <div id="timeline-player" class="timeline-preview">
+            <video id="timeline-video" playsinline preload="metadata"></video>
+            <audio id="timeline-audio" preload="metadata"></audio>
+            <div class="timeline-preview-copy">
+              <strong id="timeline-player-title">Insira um vídeo na timeline para começar.</strong>
+              <span id="timeline-player-meta">O preview usa os clipes da timeline sem renderizar o MP4 final.</span>
+              <div class="timeline-preview-actions">
+                <button type="button" id="timeline-play-button" class="secondary-button" disabled>
+                  Play timeline
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel panel-media">
+          <div class="panel-header">
+            <div>
+              <h2>Clipes encontrados</h2>
+              <p id="media-results-meta">Busque no Pexels para criar uma biblioteca da timeline.</p>
+            </div>
+          </div>
+          <div id="media-results" class="media-results">
+            <div class="empty-state">Nenhum clipe buscado ainda.</div>
+          </div>
+        </div>
+
+        <div class="panel panel-audio">
+          <div class="panel-header">
+            <div>
+              <h2>Áudios gerados</h2>
+              <p id="audio-results-meta">Crie uma narração para enviar à timeline.</p>
+            </div>
+          </div>
+          <div id="audio-results" class="audio-results">
+            <div class="empty-state">Nenhum áudio gerado ainda.</div>
+          </div>
+        </div>
+
+        <div class="panel panel-history">
+          <div class="panel-header">
+            <h2>Histórico recente</h2>
+            <p>Jobs salvos no Supabase ou no fallback local de desenvolvimento.</p>
+          </div>
+          <div id="history" class="history"></div>
+        </div>
+      </section>
+    </main>
+
+    <template id="pipeline-step-template">
+      <div class="step">
+        <div class="step-bullet"></div>
+        <div class="step-copy">
+          <strong></strong>
+          <span></span>
+        </div>
+      </div>
+    </template>
+
+    <script src="/auth.js" defer></script>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

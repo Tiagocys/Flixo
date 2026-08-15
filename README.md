@@ -131,6 +131,18 @@
 - [x] 支持 **Kimi / Moonshot AI**、**OpenAI**、**Google Gemini**、**DeepSeek**、**阿里云通义千问**、**Microsoft Azure OpenAI**、**火山引擎方舟**、**xAI Grok**、**MiniMax**、**小米 MiMo** 等主流模型服务，并兼容 **Cloudflare AI Gateway**、**魔搭 ModelScope**、**AIHubMix**、**AIML API**、**EvoLink**、**Ollama**、**OneAPI**、**LiteLLM**、**Groq**、**Pollinations AI** 等统一网关、聚合平台和本地运行环境
 - [x] 支持一键 **跨平台发布**，生成完成后可自动上传至 **TikTok**、**Instagram** 和 **YouTube Shorts**
 
+## Cloudflare Starter
+
+仓库里新增了一个独立的 `cloudflare/` scaffold，用来做你要的极简输入界面：
+
+- `pages/` 提供单输入框的前端
+- `functions/` 提供 Workers API
+- `supabase/schema.sql` 提供数据库建表草案
+- 可选对接现有 MoneyPrinterTurbo FastAPI 后端
+- 在仓库根目录运行 `npm install` 后，可以直接用 `npm run dev` 启动这个 Cloudflare 页面
+- O modo `Clipe visual 4s` usa internamente o modelo de vídeo ativado no ModelArk e não expõe engine/modelo ao usuário final.
+- O bucket R2 configurado no scaffold é `money-print`; os clipes gerados são copiados para R2 e servidos pelo endpoint `/api/assets?key=...`.
+
 ## 作品展示 🎬
 
 以下示例均由 MoneyPrinterTurbo 实际生成。

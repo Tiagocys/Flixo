@@ -1,11 +1,14 @@
 import os
 import random
+import re
 import threading
 from typing import List
 from urllib.parse import urlencode
 
 import requests
 from loguru import logger
+from moviepy.video.VideoClip import ImageClip
+from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
 from moviepy.video.io.VideoFileClip import VideoFileClip
 
 from app.config import config
@@ -15,6 +18,10 @@ from app.utils import utils
 # Thread-safe counter for API key rotation
 _api_key_counter = 0
 _api_key_lock = threading.Lock()
+_SENSITIVE_QUERY_RE = re.compile(
+    r"([?&](?:api[_-]?key|access[_-]?token|token|key|secret|password)=)([^&#\s]+)",
+    re.IGNORECASE,
+)
 
 
 def _get_tls_verify() -> bool:
@@ -32,6 +39,10 @@ def _get_tls_verify() -> bool:
         )
 
     return bool(tls_verify)
+
+
+def _redact_url(url: str) -> str:
+    return _SENSITIVE_QUERY_RE.sub(r"\1***", url)
 
 
 def get_api_key(cfg_key: str):
@@ -68,7 +79,7 @@ def search_videos_pexels(
     # Build URL
     params = {"query": search_term, "per_page": 20, "orientation": video_orientation}
     query_url = f"https://api.pexels.com/videos/search?{urlencode(params)}"
-    logger.info(f"searching videos: {query_url}, with proxies: {config.proxy}")
+    logger.info(f"searching videos: {_redact_url(query_url)}, with proxies: {config.proxy}")
 
     try:
         r = requests.get(
@@ -113,6 +124,7 @@ def search_videos_pixabay(
     search_term: str,
     minimum_duration: int,
     video_aspect: VideoAspect = VideoAspect.portrait,
+    video_type: str = "all",
 ) -> List[MaterialInfo]:
     aspect = VideoAspect(video_aspect)
 
@@ -122,12 +134,12 @@ def search_videos_pixabay(
     # Build URL
     params = {
         "q": search_term,
-        "video_type": "all",  # Accepted values: "all", "film", "animation"
+        "video_type": video_type,  # Accepted values: "all", "film", "animation"
         "per_page": 50,
         "key": api_key,
     }
     query_url = f"https://pixabay.com/api/videos/?{urlencode(params)}"
-    logger.info(f"searching videos: {query_url}, with proxies: {config.proxy}")
+    logger.info(f"searching videos: {_redact_url(query_url)}, with proxies: {config.proxy}")
 
     try:
         r = requests.get(
@@ -146,21 +158,151 @@ def search_videos_pixabay(
             if duration < minimum_duration:
                 continue
             video_files = v["videos"]
-            # loop through each url to determine the best quality
-            for video_type in video_files:
-                video = video_files[video_type]
-                w = int(video["width"])
-                # h = int(video["height"])
-                if w >= video_width:
-                    item = MaterialInfo()
-                    item.provider = "pixabay"
-                    item.url = video["url"]
-                    item.duration = duration
-                    video_items.append(item)
-                    break
+            preferred_candidates = []
+            fallback_candidates = []
+            for quality_index, quality in enumerate(("small", "medium", "tiny", "large")):
+                video = video_files.get(quality)
+                if not video:
+                    continue
+                w = int(video.get("width") or 0)
+                h = int(video.get("height") or 0)
+                if w <= 0 or h <= 0:
+                    continue
+                same_orientation = (
+                    (video_width >= video_height and w >= h)
+                    or (video_width < video_height and w < h)
+                    or (video_width == video_height)
+                )
+                # Keep Pixabay economical: prefer small/medium and same orientation.
+                # Only fall back to large when the API does not expose a smaller file.
+                size = int(video.get("size") or 0)
+                candidate = (0 if same_orientation else 1, quality_index, size, video)
+                if quality == "large":
+                    fallback_candidates.append(candidate)
+                else:
+                    preferred_candidates.append(candidate)
+            candidates = preferred_candidates or fallback_candidates
+            if not candidates:
+                continue
+            *_, selected = sorted(candidates, key=lambda item: item[:3])[0]
+            item = MaterialInfo()
+            item.provider = "pixabay"
+            item.url = selected["url"]
+            item.duration = duration
+            video_items.append(item)
         return video_items
     except Exception as e:
         logger.error(f"search videos failed: {str(e)}")
+
+    return []
+
+
+def _image_orientation(video_aspect: VideoAspect = VideoAspect.portrait) -> str:
+    aspect = VideoAspect(video_aspect)
+    if aspect == VideoAspect.landscape:
+        return "horizontal"
+    if aspect == VideoAspect.square:
+        return "all"
+    return "vertical"
+
+
+def search_images_pexels(
+    search_term: str,
+    video_aspect: VideoAspect = VideoAspect.portrait,
+    media_style: str = "all",
+) -> List[MaterialInfo]:
+    api_key = get_api_key("pexels_api_keys")
+    headers = {
+        "Authorization": api_key,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    }
+    query = search_term
+    if media_style == "animation":
+        query = f"{search_term} cartoon illustration"
+    params = {
+        "query": query,
+        "per_page": 20,
+        "orientation": _image_orientation(video_aspect),
+    }
+    query_url = f"https://api.pexels.com/v1/search?{urlencode(params)}"
+    logger.info(f"searching images: {_redact_url(query_url)}, with proxies: {config.proxy}")
+
+    try:
+        r = requests.get(
+            query_url,
+            headers=headers,
+            proxies=config.proxy,
+            verify=_get_tls_verify(),
+            timeout=(30, 60),
+        )
+        response = r.json()
+        image_items: List[MaterialInfo] = []
+        if "photos" not in response:
+            logger.error(f"search images failed: {response}")
+            return image_items
+        for photo in response["photos"]:
+            src = photo.get("src") or {}
+            image_url = src.get("large2x") or src.get("large") or src.get("original")
+            if not image_url:
+                continue
+            item = MaterialInfo()
+            item.provider = "pexels"
+            item.url = image_url
+            item.duration = 0
+            image_items.append(item)
+        return image_items
+    except Exception as e:
+        logger.error(f"search images failed: {str(e)}")
+
+    return []
+
+
+def search_images_pixabay(
+    search_term: str,
+    video_aspect: VideoAspect = VideoAspect.portrait,
+    media_style: str = "all",
+) -> List[MaterialInfo]:
+    api_key = get_api_key("pixabay_api_keys")
+    image_type = "all"
+    query = search_term
+    if media_style == "animation":
+        image_type = "illustration"
+        query = f"{search_term} cartoon"
+    elif media_style == "realistic":
+        image_type = "photo"
+
+    params = {
+        "q": query,
+        "image_type": image_type,  # all, photo, illustration, vector
+        "orientation": _image_orientation(video_aspect),
+        "per_page": 50,
+        "safesearch": "true",
+        "key": api_key,
+    }
+    query_url = f"https://pixabay.com/api/?{urlencode(params)}"
+    logger.info(f"searching images: {_redact_url(query_url)}, with proxies: {config.proxy}")
+
+    try:
+        r = requests.get(
+            query_url, proxies=config.proxy, verify=_get_tls_verify(), timeout=(30, 60)
+        )
+        response = r.json()
+        image_items: List[MaterialInfo] = []
+        if "hits" not in response:
+            logger.error(f"search images failed: {response}")
+            return image_items
+        for hit in response["hits"]:
+            image_url = hit.get("webformatURL") or hit.get("largeImageURL")
+            if not image_url:
+                continue
+            item = MaterialInfo()
+            item.provider = "pixabay"
+            item.url = image_url
+            item.duration = 0
+            image_items.append(item)
+        return image_items
+    except Exception as e:
+        logger.error(f"search images failed: {str(e)}")
 
     return []
 
@@ -198,7 +340,7 @@ def search_videos_coverr(
         "sort": "popular",
     }
     query_url = f"https://api.coverr.co/videos?{urlencode(params)}"
-    logger.info(f"searching videos: {query_url}, with proxies: {config.proxy}")
+    logger.info(f"searching videos: {_redact_url(query_url)}, with proxies: {config.proxy}")
 
     try:
         r = requests.get(
@@ -301,6 +443,77 @@ def save_video(video_url: str, save_dir: str = "") -> str:
     return ""
 
 
+def save_image_as_video(
+    image_url: str,
+    save_dir: str = "",
+    clip_duration: int = 5,
+) -> str:
+    if not save_dir:
+        save_dir = utils.storage_dir("cache_videos")
+
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    url_without_query = image_url.split("?")[0]
+    url_hash = utils.md5(url_without_query)
+    image_path = f"{save_dir}/img-{url_hash}.jpg"
+    video_path = f"{save_dir}/img-{url_hash}.mp4"
+
+    if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+        logger.info(f"image video already exists: {video_path}")
+        return video_path
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+
+    if not os.path.exists(image_path) or os.path.getsize(image_path) == 0:
+        with open(image_path, "wb") as f:
+            f.write(
+                requests.get(
+                    image_url,
+                    headers=headers,
+                    proxies=config.proxy,
+                    verify=_get_tls_verify(),
+                    timeout=(60, 180),
+                ).content
+            )
+
+    if not os.path.exists(image_path) or os.path.getsize(image_path) == 0:
+        return ""
+
+    clip = None
+    final_clip = None
+    try:
+        clip = ImageClip(image_path).with_duration(clip_duration).with_position("center")
+        zoom_clip = clip.resized(
+            lambda t: 1 + (clip_duration * 0.03) * (t / clip.duration)
+        )
+        final_clip = CompositeVideoClip([zoom_clip])
+        final_clip.write_videofile(video_path, fps=30, logger=None)
+        logger.success(f"image converted to video: {video_path}")
+        return video_path if os.path.exists(video_path) and os.path.getsize(video_path) > 0 else ""
+    except Exception as e:
+        logger.error(f"failed to convert image to video: {image_url} => {str(e)}")
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+        except Exception:
+            pass
+        return ""
+    finally:
+        if clip is not None:
+            try:
+                clip.close()
+            except Exception:
+                pass
+        if final_clip is not None:
+            try:
+                final_clip.close()
+            except Exception:
+                pass
+
+
 def download_videos(
     task_id: str,
     search_terms: List[str],
@@ -310,20 +523,60 @@ def download_videos(
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
     match_script_order: bool = False,
+    media_mode: str = "videos",
+    media_style: str = "all",
 ) -> List[str]:
-    search_videos = search_videos_pexels
-    if source == "pixabay":
-        search_videos = search_videos_pixabay
-    elif source == "coverr":
-        search_videos = search_videos_coverr
+    media_mode = str(media_mode or "videos").lower()
+    media_style = str(media_style or "all").lower()
+    if media_mode not in ("videos", "images", "mixed"):
+        media_mode = "videos"
+    if media_style not in ("all", "realistic", "animation"):
+        media_style = "all"
 
-    material_directory = config.app.get("material_directory", "").strip()
-    if material_directory == "task":
-        material_directory = utils.task_dir(task_id)
-    elif material_directory and not os.path.isdir(material_directory):
-        material_directory = ""
+    pixabay_video_type = "animation" if media_style == "animation" else "film" if media_style == "realistic" else "all"
 
-    if match_script_order:
+    def search_videos(search_term: str, minimum_duration: int, video_aspect: VideoAspect):
+        if source == "pixabay":
+            return search_videos_pixabay(
+                search_term=search_term,
+                minimum_duration=minimum_duration,
+                video_aspect=video_aspect,
+                video_type=pixabay_video_type,
+            )
+        if source == "coverr":
+            return search_videos_coverr(
+                search_term=search_term,
+                minimum_duration=minimum_duration,
+                video_aspect=video_aspect,
+            )
+        query = f"{search_term} animation cartoon" if media_style == "animation" else search_term
+        return search_videos_pexels(
+            search_term=query,
+            minimum_duration=minimum_duration,
+            video_aspect=video_aspect,
+        )
+
+    def search_images(search_term: str, video_aspect: VideoAspect):
+        if source == "pixabay":
+            return search_images_pixabay(
+                search_term=search_term,
+                video_aspect=video_aspect,
+                media_style=media_style,
+            )
+        return search_images_pexels(
+            search_term=search_term,
+            video_aspect=video_aspect,
+            media_style=media_style,
+        )
+
+    # Pure video mode can use the existing ordered downloader. Image/mixed modes
+    # need the same script-order behavior but a different save path for images.
+    if match_script_order and media_mode == "videos":
+        material_directory = config.app.get("material_directory", "").strip()
+        if material_directory == "task":
+            material_directory = utils.task_dir(task_id)
+        elif material_directory and not os.path.isdir(material_directory):
+            material_directory = ""
         return _download_videos_by_script_order(
             task_id=task_id,
             search_terms=search_terms,
@@ -334,43 +587,91 @@ def download_videos(
             material_directory=material_directory,
         )
 
+    material_directory = config.app.get("material_directory", "").strip()
+    if material_directory == "task":
+        material_directory = utils.task_dir(task_id)
+    elif material_directory and not os.path.isdir(material_directory):
+        material_directory = ""
+
     valid_video_items = []
-    valid_video_urls = []
+    candidate_groups = []
+    valid_video_urls = set()
     found_duration = 0.0
     for search_term in search_terms:
-        video_items = search_videos(
-            search_term=search_term,
-            minimum_duration=max_clip_duration,
-            video_aspect=video_aspect,
+        video_items = []
+        image_items = []
+        if media_mode in ("videos", "mixed"):
+            video_items = search_videos(
+                search_term=search_term,
+                minimum_duration=max_clip_duration,
+                video_aspect=video_aspect,
+            )
+        if media_mode in ("images", "mixed") and source != "coverr":
+            image_items = search_images(
+                search_term=search_term,
+                video_aspect=video_aspect,
+            )
+        logger.info(
+            f"found {len(video_items)} videos and {len(image_items)} images for '{search_term}'"
         )
-        logger.info(f"found {len(video_items)} videos for '{search_term}'")
 
-        for item in video_items:
+        term_items = []
+        for item in [*video_items, *image_items]:
             if item.url not in valid_video_urls:
+                term_items.append(item)
+                valid_video_urls.add(item.url)
+                found_duration += item.duration or max_clip_duration
+        if match_script_order and term_items:
+            candidate_groups.append((search_term, term_items))
+        else:
+            valid_video_items.extend(term_items)
+
+    if match_script_order and candidate_groups:
+        valid_video_items = []
+        selected_duration = 0.0
+        candidate_index = 0
+        while candidate_groups and selected_duration <= audio_duration:
+            has_candidate = False
+            for search_term, term_items in candidate_groups:
+                if candidate_index >= len(term_items):
+                    continue
+                has_candidate = True
+                item = term_items[candidate_index]
                 valid_video_items.append(item)
-                valid_video_urls.append(item.url)
-                found_duration += item.duration
+                selected_duration += item.duration or max_clip_duration
+                if selected_duration > audio_duration:
+                    break
+            if not has_candidate:
+                break
+            candidate_index += 1
 
     logger.info(
-        f"found total videos: {len(valid_video_items)}, required duration: {audio_duration} seconds, found duration: {found_duration} seconds"
+        f"found total media: {len(valid_video_items)}, required duration: {audio_duration} seconds, found duration: {found_duration} seconds"
     )
     video_paths = []
 
     concat_mode_value = getattr(video_concat_mode, "value", video_concat_mode)
-    if concat_mode_value == VideoConcatMode.random.value:
+    if concat_mode_value == VideoConcatMode.random.value and not match_script_order:
         random.shuffle(valid_video_items)
 
     total_duration = 0.0
     for item in valid_video_items:
         try:
-            logger.info(f"downloading video: {item.url}")
-            saved_video_path = save_video(
-                video_url=item.url, save_dir=material_directory
+            logger.info(f"downloading media: {item.url}")
+            is_image = not item.duration
+            saved_video_path = (
+                save_image_as_video(
+                    image_url=item.url,
+                    save_dir=material_directory,
+                    clip_duration=max_clip_duration,
+                )
+                if is_image
+                else save_video(video_url=item.url, save_dir=material_directory)
             )
             if saved_video_path:
-                logger.info(f"video saved: {saved_video_path}")
+                logger.info(f"media saved: {saved_video_path}")
                 video_paths.append(saved_video_path)
-                seconds = min(max_clip_duration, item.duration)
+                seconds = min(max_clip_duration, item.duration or max_clip_duration)
                 total_duration += seconds
                 if total_duration > audio_duration:
                     logger.info(

@@ -1,0 +1,12 @@
+{
+  "name": "moneyprinterturbo-root",
+  "private": true,
+  "workspaces": [
+    "cloudflare"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w cloudflare",
+    "deploy": "npm run deploy -w cloudflare",
+    "typecheck": "npm run typecheck -w cloudflare"
+  }
+}

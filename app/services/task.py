@@ -4,11 +4,13 @@ import re
 import socket
 import threading
 import time
+from urllib.parse import urlparse
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from functools import partial
 from os import path
 from uuid import uuid4
 
+import requests
 from loguru import logger
 
 from app.config import config
@@ -484,10 +486,12 @@ def generate_audio(task_id, params, video_script, voice_preview=None):
             voice_file=audio_file,
         )
         if sub_maker is None:
+            tts_error = voice.get_last_tts_error()
             _mark_task_failed(
                 task_id,
                 "audio",
-                "failed to synthesize audio; verify the selected voice and TTS connectivity",
+                tts_error
+                or "failed to synthesize audio; verify the selected voice and TTS connectivity",
             )
             return None, None, None
         audio_duration = math.ceil(voice.get_audio_duration(sub_maker))
@@ -568,6 +572,7 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
 def get_video_materials(task_id, params, video_terms, audio_duration):
     if params.video_source == "local":
         logger.info("\n\n## preprocess local materials")
+        params.video_materials = _prepare_local_video_materials(params.video_materials)
         materials = video.preprocess_video(
             materials=params.video_materials, clip_duration=params.video_clip_duration
         )
@@ -596,6 +601,8 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             audio_duration=audio_duration * params.video_count,
             max_clip_duration=params.video_clip_duration,
             match_script_order=params.match_materials_to_script,
+            media_mode=params.media_mode,
+            media_style=params.media_style,
         )
         if not downloaded_videos:
             _mark_task_failed(
@@ -605,6 +612,58 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             )
             return None
         return downloaded_videos
+
+
+def _prepare_local_video_materials(video_materials):
+    if not video_materials:
+        return video_materials
+
+    local_videos_dir = utils.storage_dir("local_videos", create=True)
+    prepared_materials = []
+    for index, item in enumerate(video_materials):
+        material_url = str(getattr(item, "url", "") or "").strip()
+        if not material_url:
+            continue
+        if not material_url.startswith(("http://", "https://")):
+            prepared_materials.append(item)
+            continue
+
+        try:
+            parsed = urlparse(material_url)
+            extension = os.path.splitext(parsed.path)[1].lower()
+            if extension not in {".mp4", ".mov", ".m4v", ".webm", ".jpg", ".jpeg", ".png", ".webp"}:
+                extension = ".mp4"
+            filename = f"selected-{utils.md5(material_url)}-{index}{extension}"
+            local_path = os.path.join(local_videos_dir, filename)
+            if not os.path.exists(local_path) or os.path.getsize(local_path) == 0:
+                logger.info(f"downloading selected material: {material_url}")
+                response = requests.get(
+                    material_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    },
+                    proxies=config.proxy,
+                    verify=material._get_tls_verify(),
+                    timeout=(60, 240),
+                )
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").lower()
+                if extension == ".mp4" and content_type.startswith("image/"):
+                    image_extension = ".png" if "png" in content_type else ".jpg"
+                    local_path = os.path.join(
+                        local_videos_dir,
+                        f"selected-{utils.md5(material_url)}-{index}{image_extension}",
+                    )
+                with open(local_path, "wb") as file:
+                    file.write(response.content)
+            item.url = local_path
+            prepared_materials.append(item)
+        except Exception as exc:
+            logger.warning(
+                f"failed to download selected material: {material_url}, error: {str(exc)}"
+            )
+
+    return prepared_materials
 
 
 def generate_final_videos(

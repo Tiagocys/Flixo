@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flixo YouTube Downloader</title>
+    <meta name="description" content="Baixe vídeos do YouTube para uso local no pipeline do Flixo." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell clipper-shell downloader-shell">
+      <section class="hero clipper-hero">
+        <div class="eyebrow">Flixo Downloader</div>
+        <h1>Baixe vídeos do YouTube para trabalhar localmente.</h1>
+        <p class="lead">
+          Cole a URL, escolha a qualidade máxima e salve o MP4 em
+          <code>storage/tasks/downloads</code>.
+        </p>
+        <div class="workspace-tabs">
+          <a class="workspace-tab" href="/">Criador por tema</a>
+          <a class="workspace-tab" href="/clipper.html">Clipper</a>
+          <a class="workspace-tab" href="/podcast.html">Podcast renderer</a>
+        </div>
+      </section>
+
+      <section class="clipper-grid">
+        <form id="youtube-download-form" class="panel clipper-input-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Download</h2>
+              <p>Use apenas vídeos que você tem direito de baixar e reutilizar.</p>
+            </div>
+          </div>
+          <div class="clipper-inputs">
+            <div class="field">
+              <label for="youtube-download-url">URL do YouTube</label>
+              <input id="youtube-download-url" type="url" placeholder="https://www.youtube.com/watch?v=..." required />
+            </div>
+            <div class="field">
+              <label for="youtube-download-height">Qualidade máxima</label>
+              <select id="youtube-download-height">
+                <option value="720" selected>720p</option>
+                <option value="1080">1080p</option>
+                <option value="480">480p</option>
+                <option value="360">360p</option>
+              </select>
+            </div>
+          </div>
+          <div class="prompt-actions">
+            <div class="helper">
+              <span class="helper-title">yt-dlp local</span>
+              <span>URL → MP4 local → uso no Clipper/Podcast</span>
+            </div>
+            <button type="submit" id="youtube-download-button">Baixar vídeo</button>
+          </div>
+        </form>
+
+        <section class="panel clipper-status-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Status</h2>
+              <p id="youtube-download-status-meta">Nenhum download iniciado.</p>
+            </div>
+            <div class="status-pill" id="youtube-download-status-pill">Parado</div>
+          </div>
+          <div class="progress-track">
+            <div id="youtube-download-progress-bar" class="progress-bar" style="width: 0%"></div>
+          </div>
+          <div id="youtube-download-error" class="clipper-error" hidden></div>
+        </section>
+
+        <section class="panel clipper-outputs-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Arquivo baixado</h2>
+              <p id="youtube-download-result-meta">O link do MP4 aparecerá aqui.</p>
+            </div>
+          </div>
+          <div id="youtube-download-result" class="clipper-outputs">
+            <div class="empty-state">Nenhum arquivo baixado ainda.</div>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/auth.js" defer></script>
+    <script src="/youtube-download.js" defer></script>
+  </body>
+</html>

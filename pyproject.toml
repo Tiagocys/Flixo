@@ -21,6 +21,8 @@ dependencies = [
     "uvicorn==0.32.1",
     "openai==2.24.0",
     "faster-whisper==1.1.0",
+    "mediapipe==1.0.0",
+    "opencv-python-headless==4.10.0.84",
     "loguru==0.7.3",
     "dashscope==1.20.14",
     "azure-cognitiveservices-speech==1.41.1",
@@ -34,6 +36,7 @@ dependencies = [
     "audioop-lts==0.2.2; python_version >= '3.13'",
     "litellm==1.86.2",
     "google-genai==2.11.0",
+    "yt-dlp>=2026.7.4",
 ]
 
 [project.optional-dependencies]

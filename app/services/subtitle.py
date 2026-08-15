@@ -12,13 +12,13 @@ from loguru import logger
 from app.config import config
 from app.utils import utils
 
-model_size = config.whisper.get("model_size", "large-v3")
-device = config.whisper.get("device", "cpu")
-compute_type = config.whisper.get("compute_type", "int8")
+model_size = os.getenv("WHISPER_MODEL_SIZE") or config.whisper.get("model_size", "small")
+device = os.getenv("WHISPER_DEVICE") or config.whisper.get("device", "cpu")
+compute_type = os.getenv("WHISPER_COMPUTE_TYPE") or config.whisper.get("compute_type", "int8")
 model = None
 
 
-def create(audio_file, subtitle_file: str = ""):
+def create(audio_file, subtitle_file: str = "", progress_callback=None):
     global model
     if WhisperModel is None:
         logger.warning("faster_whisper not available, skipping whisper subtitle generation")
@@ -118,6 +118,11 @@ def create(audio_file, subtitle_file: str = ""):
             continue
 
         recognized(seg_text, seg_start, seg_end)
+        if progress_callback:
+            try:
+                progress_callback(seg_start, seg_end, seg_text, getattr(info, "duration", 0))
+            except Exception as exc:
+                logger.warning(f"subtitle progress callback failed: {str(exc)}")
 
     end = timer()
 

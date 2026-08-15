@@ -17,6 +17,7 @@ from xml.sax.saxutils import escape, unescape
 
 import edge_tts
 import requests
+from dotenv import find_dotenv, load_dotenv
 from edge_tts import SubMaker
 from loguru import logger
 from moviepy.video.tools import subtitles
@@ -30,10 +31,21 @@ _DEFAULT_EDGE_TTS_TIMEOUT_SECONDS = 30.0
 _MIMO_DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
 _MIMO_DEFAULT_TTS_MODEL = "mimo-v2.5-tts"
 NO_VOICE_NAME = "no-voice"
+load_dotenv(find_dotenv(usecwd=True), override=False)
 # `none` 是 PR #981 里曾使用过的无配音标识。这里短期兼容这个值，避免
 # 已经手动调用过该分支的 API 用户升级后立即失效；WebUI 和新代码统一使用
 # 更明确的 `no-voice`。
 _NO_VOICE_ALIASES = {NO_VOICE_NAME, "none"}
+_LAST_TTS_ERROR = ""
+
+
+def _set_last_tts_error(message: str = ""):
+    global _LAST_TTS_ERROR
+    _LAST_TTS_ERROR = message
+
+
+def get_last_tts_error() -> str:
+    return _LAST_TTS_ERROR
 
 
 def _configure_pydub_ffmpeg(audio_segment_cls):
@@ -361,6 +373,7 @@ def tts(
     voice_file: str,
     voice_volume: float = 1.0,
 ) -> Union[SubMaker, None]:
+    _set_last_tts_error("")
     if is_no_voice(voice_name):
         duration_seconds = estimate_no_voice_duration(text)
         if not generate_silent_audio(duration_seconds, voice_file):
@@ -1285,12 +1298,20 @@ def elevenlabs_tts(
 ) -> Union[SubMaker, None]:
     text = (text or "").strip()
     if not text:
-        logger.error("ElevenLabs TTS text is empty")
+        error_message = "ElevenLabs TTS text is empty"
+        _set_last_tts_error(error_message)
+        logger.error(error_message)
         return None
 
-    api_key = config.elevenlabs.get("api_key", "")
+    api_key = (
+        config.elevenlabs.get("api_key", "")
+        or os.getenv("ELEVENLABS_API_KEY", "")
+        or os.getenv("ELEVENLABS_APIKEY", "")
+    )
     if not api_key:
-        logger.error("ElevenLabs API key is not set")
+        error_message = "ElevenLabs API key is not set"
+        _set_last_tts_error(error_message)
+        logger.error(error_message)
         return None
 
     if not model_id:
@@ -1313,8 +1334,14 @@ def elevenlabs_tts(
     }
 
     # Errors where retrying will never help (auth/access/validation failures).
-    _NON_RETRYABLE_CODES = {401, 403, 422}
-    _NON_RETRYABLE_STATUSES = {"voice_disabled", "voice_access_denied", "unauthorized"}
+    _NON_RETRYABLE_CODES = {401, 402, 403, 422}
+    _NON_RETRYABLE_STATUSES = {
+        "paid_plan_required",
+        "payment_required",
+        "unauthorized",
+        "voice_access_denied",
+        "voice_disabled",
+    }
 
     for i in range(3):
         try:
@@ -1332,6 +1359,16 @@ def elevenlabs_tts(
                     pass
 
                 if response.status_code in _NON_RETRYABLE_CODES or error_status in _NON_RETRYABLE_STATUSES:
+                    if error_status == "famous_voice_not_permitted":
+                        error_message = (
+                            "A voz selecionada aparece na conta ElevenLabs, mas a chave "
+                            "não tem permissão para gerar áudio com ela. Escolha outra voz."
+                        )
+                    elif error_status:
+                        error_message = f"ElevenLabs TTS failed: {error_status}"
+                    else:
+                        error_message = f"ElevenLabs TTS failed with status {response.status_code}"
+                    _set_last_tts_error(error_message)
                     logger.error(
                         f"ElevenLabs TTS failed (non-retryable) — voice_id: {voice_id}, "
                         f"status: {response.status_code}, error: {error_status or response.text[:200]}. "

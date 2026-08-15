@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Autenticando | Flixo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="login-body">
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="auth-shell auth-callback-shell">
+      <section class="panel auth-card">
+        <div class="panel-header">
+          <div>
+            <h2>Conectando sua conta</h2>
+            <p id="auth-callback-message">Finalizando login com Google.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/auth.js" defer></script>
+    <script src="/auth/callback.js" defer></script>
+  </body>
+</html>

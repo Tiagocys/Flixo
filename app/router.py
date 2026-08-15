@@ -9,9 +9,13 @@ Resources:
 
 from fastapi import APIRouter
 
-from app.controllers.v1 import llm, video
+from app.controllers.v1 import clipper, downloads, llm, podcast, video, youtube
 
 root_api_router = APIRouter()
 # v1
 root_api_router.include_router(video.router)
 root_api_router.include_router(llm.router)
+root_api_router.include_router(downloads.router)
+root_api_router.include_router(clipper.router)
+root_api_router.include_router(podcast.router)
+root_api_router.include_router(youtube.router)

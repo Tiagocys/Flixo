@@ -6,12 +6,19 @@ import threading
 from contextlib import contextmanager
 
 import toml
+from dotenv import load_dotenv
 from loguru import logger
 
 from app import __version__
 
 root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 config_file = f"{root_dir}/config.toml"
+workspace_env_file = os.path.join(os.path.dirname(root_dir), ".env")
+project_env_file = os.path.join(root_dir, ".env")
+for env_file in (workspace_env_file, project_env_file):
+    if os.path.isfile(env_file):
+        load_dotenv(env_file, override=False)
+
 _CONTAINER_CGROUP_MARKERS = ("docker", "containerd", "kubepods", "libpod", "podman")
 _DOCKER_HOST_GATEWAY_NAME = "host.docker.internal"
 _config_save_lock = threading.RLock()
@@ -292,6 +299,55 @@ def save_config():
 
 
 _cfg = load_config()
+
+
+def _first_env_value(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _env_list(*names: str) -> list[str]:
+    value = _first_env_value(*names)
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _apply_env_overrides(cfg: dict) -> None:
+    app_cfg = cfg.setdefault("app", {})
+    elevenlabs_cfg = cfg.setdefault("elevenlabs", {})
+
+    gemini_api_key = _first_env_value("GEMINI_API_KEY", "GEMINI_APIKEY")
+    if gemini_api_key and not app_cfg.get("gemini_api_key"):
+        app_cfg["gemini_api_key"] = gemini_api_key
+        if not app_cfg.get("moonshot_api_key"):
+            app_cfg["llm_provider"] = "gemini"
+        app_cfg["gemini_model_name"] = (
+            _first_env_value("GEMINI_MODEL_NAME", "GEMINI_MODEL")
+            or app_cfg.get("gemini_model_name")
+            or "gemini-3.1-flash-lite"
+        )
+
+    pexels_api_keys = _env_list("PEXELS_API_KEYS", "PEXELS_API_KEY", "PEXELS_APIKEY")
+    if pexels_api_keys and not app_cfg.get("pexels_api_keys"):
+        app_cfg["pexels_api_keys"] = pexels_api_keys
+        app_cfg.setdefault("video_source", "pexels")
+
+    pixabay_api_keys = _env_list(
+        "PIXABAY_API_KEYS", "PIXABAY_API_KEY", "PIXABAY_APIKEY"
+    )
+    if pixabay_api_keys and not app_cfg.get("pixabay_api_keys"):
+        app_cfg["pixabay_api_keys"] = pixabay_api_keys
+
+    elevenlabs_api_key = _first_env_value("ELEVENLABS_API_KEY", "ELEVENLABS_APIKEY")
+    if elevenlabs_api_key and not elevenlabs_cfg.get("api_key"):
+        elevenlabs_cfg["api_key"] = elevenlabs_api_key
+
+
+_apply_env_overrides(_cfg)
 app = _SynchronizedConfig(_cfg.get("app", {}))
 whisper = _cfg.get("whisper", {})
 proxy = _cfg.get("proxy", {})
