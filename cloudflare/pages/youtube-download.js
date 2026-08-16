@@ -50,7 +50,7 @@ function renderJob(job) {
       ? "Download concluído."
       : job?.status === "failed"
         ? "O download falhou."
-        : "Baixando e preparando MP4 local.";
+        : "Baixando e preparando o vídeo.";
 
   if (job?.error) {
     els.error.hidden = false;
@@ -61,26 +61,22 @@ function renderJob(job) {
   }
 
   if (job?.video_url) {
-    els.resultMeta.textContent = "Arquivo pronto para abrir ou usar nos outros fluxos.";
+    els.resultMeta.textContent = "Vídeo pronto para abrir ou usar nos seus projetos.";
     els.result.innerHTML = `
       <article class="clipper-output-card downloader-result-card">
         <div class="clipper-output-copy">
           <div class="output-heading">
-            <span>MP4 local</span>
+            <span>Vídeo pronto</span>
             <strong>${escapeHtml(job.title || "Vídeo baixado")}</strong>
           </div>
           <dl class="output-metadata">
-            <div>
-              <dt>Caminho local</dt>
-              <dd>${escapeHtml(job.video_path || "")}</dd>
-            </div>
             <div>
               <dt>Qualidade máxima</dt>
               <dd>${escapeHtml(job.max_height || 720)}p</dd>
             </div>
           </dl>
           <div class="output-actions">
-            <a class="secondary-button" href="${escapeHtml(job.video_url)}" target="_blank" rel="noreferrer">Abrir MP4</a>
+            <a class="secondary-button" href="${escapeHtml(job.video_url)}" target="_blank" rel="noreferrer">Assistir vídeo</a>
             <a class="secondary-button" href="${escapeHtml(job.video_url)}" download>Baixar arquivo</a>
           </div>
         </div>

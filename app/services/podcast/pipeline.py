@@ -14,7 +14,9 @@ from app.services.podcast.covers import attach_cover_options
 from app.services.podcast.editor import edit_podcast_output
 from app.services.podcast.ingest import job_dir
 from app.services.podcast.renderer import reburn_podcast_subtitles, render_podcast_clip
+from app.services import r2_storage
 from app.services.ytdlp_runner import ytdlp_probe_metadata
+from app.utils import utils
 
 
 class PodcastJobCancelled(RuntimeError):
@@ -167,9 +169,12 @@ def render_job(
         except Exception:
             logger.exception(f"failed to generate podcast covers: {job_id}")
         _raise_if_cancelled(job_id)
+        outputs = [_persist_output_assets(job_id, output) for output in outputs]
+        _cleanup_source_video(job_id, job.source_file)
 
         def done(current):
             current.outputs = outputs
+            current.source_file = None
             current.status = "done"
             current.current_step = "done"
             current.progress = 100
@@ -239,6 +244,8 @@ def update_output_subtitle(job_id: str, output_id: str, subtitle_text: str) -> d
     if not camera_path.is_file():
         camera_path = Path(str(video_path).replace(".mp4", ".camera.mp4"))
     _validate_srt_text(subtitle_text)
+    original_subtitle = subtitle_path.read_text(encoding="utf-8") if subtitle_path.is_file() else ""
+    _validate_srt_timestamps_unchanged(original_subtitle, subtitle_text)
     subtitle_path.write_text(subtitle_text.strip() + "\n", encoding="utf-8")
     render_result = reburn_podcast_subtitles(
         camera_path=str(camera_path),
@@ -246,20 +253,20 @@ def update_output_subtitle(job_id: str, output_id: str, subtitle_text: str) -> d
         output_path=str(video_path),
         burn_subtitles=bool(output.get("burn_subtitles", True)),
     )
+    output = _persist_output_assets(job_id, {
+        **output,
+        "duration": render_result.get("duration") or output.get("duration"),
+        "subtitle_path": str(subtitle_path),
+        "video_path": str(video_path),
+        "subtitle_edited": True,
+        "subtitle_edited_at": int(time.time()),
+    })
 
     def apply(current):
         for index, item in enumerate(current.outputs):
             if str(item.get("id") or "") != output_id:
                 continue
-            updated = dict(item)
-            updated["duration"] = render_result.get("duration") or updated.get("duration")
-            updated["subtitle_path"] = str(subtitle_path)
-            updated["video_path"] = str(video_path)
-            updated["subtitle_url"] = _task_url(str(subtitle_path))
-            updated["video_url"] = _task_url(str(video_path))
-            updated["subtitle_edited"] = True
-            updated["subtitle_edited_at"] = int(time.time())
-            current.outputs[index] = updated
+            current.outputs[index] = output
             break
         current.metadata_path = write_job_metadata(current, job_dir(job_id))
 
@@ -282,16 +289,67 @@ def update_output_subtitle_mode(job_id: str, output_id: str, burn_subtitles: boo
         output_path=str(video_path),
         burn_subtitles=burn_subtitles,
     )
+    output = _persist_output_assets(job_id, {
+        **output,
+        "duration": render_result.get("duration") or output.get("duration"),
+        "burn_subtitles": burn_subtitles,
+        "subtitle_edited_at": int(time.time()),
+    })
 
     def apply(current):
         for index, item in enumerate(current.outputs):
             if str(item.get("id") or "") != output_id:
                 continue
-            updated = dict(item)
-            updated["duration"] = render_result.get("duration") or updated.get("duration")
-            updated["burn_subtitles"] = burn_subtitles
-            updated["subtitle_edited_at"] = int(time.time())
-            current.outputs[index] = updated
+            current.outputs[index] = output
+            break
+        current.metadata_path = write_job_metadata(current, job_dir(job_id))
+
+    job = registry.update_job(job_id, apply)
+    if not job:
+        raise RuntimeError("Podcast job nao encontrado.")
+    return next((item for item in job.outputs if str(item.get("id") or "") == output_id), output)
+
+
+def update_output_metadata(
+    job_id: str,
+    output_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    cover_title: str | None = None,
+) -> dict:
+    output = dict(_find_output(job_id, output_id))
+    old_cover_title = str(output.get("cover_title") or output.get("title") or "").strip()
+    if title is not None:
+        output["title"] = _clean_text(title, 100)
+    if description is not None:
+        output["public_description"] = _clean_multiline_text(description, 5000)
+    if tags is not None:
+        output["youtube_tags"] = [_clean_text(tag, 60).lstrip("#") for tag in tags if _clean_text(tag, 60)]
+    if cover_title is not None:
+        output["cover_title"] = _clean_text(cover_title, 80)
+    elif title is not None and not output.get("cover_title"):
+        output["cover_title"] = _clean_text(title, 80)
+
+    new_cover_title = str(output.get("cover_title") or output.get("title") or "").strip()
+    should_update_covers = new_cover_title and (
+        new_cover_title != old_cover_title or not output.get("cover_options")
+    )
+    if should_update_covers:
+        try:
+            attach_cover_options(job_dir(job_id), [output], variants=3)
+            output = _persist_cover_assets(job_id, output)
+        except Exception:
+            logger.exception(f"failed to update podcast covers: job={job_id}, output={output_id}")
+            raise RuntimeError("Não foi possível atualizar as capas.")
+
+    output["metadata_edited_at"] = int(time.time())
+
+    def apply(current):
+        for index, item in enumerate(current.outputs):
+            if str(item.get("id") or "") != output_id:
+                continue
+            current.outputs[index] = output
             break
         current.metadata_path = write_job_metadata(current, job_dir(job_id))
 
@@ -322,6 +380,7 @@ def edit_output(
         append_output_id=append_output_id,
         append_position=append_position,
     )
+    edited_output = _persist_output_assets(job_id, edited_output)
 
     def apply(current):
         current.outputs.append(edited_output)
@@ -335,6 +394,99 @@ def edit_output(
     if not updated_job:
         raise RuntimeError("Podcast job nao encontrado.")
     return edited_output
+
+
+def _clean_text(value: str, limit: int) -> str:
+    text = " ".join(str(value or "").strip().split())
+    return text[:limit]
+
+
+def _clean_multiline_text(value: str, limit: int) -> str:
+    lines = [" ".join(line.strip().split()) for line in str(value or "").strip().splitlines()]
+    text = "\n".join(line for line in lines if line)
+    return text[:limit]
+
+
+def _persist_output_assets(job_id: str, output: dict) -> dict:
+    if not r2_storage.configured():
+        return output
+    updated = dict(output)
+    output_id = str(updated.get("id") or utils.get_uuid()).replace("/", "-")
+    base_key = f"podcast/{job_id}/outputs/{output_id}"
+
+    video_path = Path(str(updated.get("video_path") or ""))
+    if video_path.is_file():
+        try:
+            before_size = video_path.stat().st_size
+            r2_storage.replace_with_compressed(video_path)
+            after_size = video_path.stat().st_size
+            key = f"{base_key}.mp4"
+            if r2_storage.upload_file(video_path, key, "video/mp4"):
+                updated["video_key"] = key
+                updated["video_url"] = r2_storage.public_url(key)
+                updated["r2_video_key"] = key
+                updated["r2_compressed"] = True
+                updated["r2_original_size"] = before_size
+                updated["r2_size"] = after_size
+        except Exception:
+            logger.exception(f"failed to persist podcast video to R2: job={job_id}, output={output_id}")
+
+    subtitle_path = Path(str(updated.get("subtitle_path") or ""))
+    if subtitle_path.is_file():
+        try:
+            key = f"{base_key}.srt"
+            if r2_storage.upload_file(subtitle_path, key, "text/plain; charset=utf-8"):
+                updated["subtitle_key"] = key
+                updated["subtitle_url"] = r2_storage.public_url(key)
+                updated["r2_subtitle_key"] = key
+        except Exception:
+            logger.exception(f"failed to persist podcast subtitle to R2: job={job_id}, output={output_id}")
+
+    return _persist_cover_assets(job_id, updated)
+
+
+def _persist_cover_assets(job_id: str, output: dict) -> dict:
+    if not r2_storage.configured():
+        return output
+    updated = dict(output)
+    output_id = str(updated.get("id") or utils.get_uuid()).replace("/", "-")
+    base_key = f"podcast/{job_id}/outputs/{output_id}"
+    cover_options = updated.get("cover_options")
+    if isinstance(cover_options, list):
+        updated_options = []
+        for index, option in enumerate(cover_options, start=1):
+            if not isinstance(option, dict):
+                continue
+            option_copy = dict(option)
+            cover_path = Path(str(option_copy.get("path") or ""))
+            if cover_path.is_file():
+                try:
+                    key = f"{base_key}-cover-{index}.jpg"
+                    if r2_storage.upload_file(cover_path, key, "image/jpeg"):
+                        option_copy["key"] = key
+                        option_copy["url"] = r2_storage.public_url(key)
+                except Exception:
+                    logger.exception(f"failed to persist podcast cover to R2: job={job_id}, output={output_id}")
+            updated_options.append(option_copy)
+        updated["cover_options"] = updated_options
+        if updated_options:
+            updated["cover_key"] = updated_options[0].get("key") or updated.get("cover_key")
+            updated["cover_url"] = updated_options[0].get("url") or updated.get("cover_url")
+    return updated
+
+
+def _cleanup_source_video(job_id: str, source_file: str | None) -> None:
+    if not source_file:
+        return
+    try:
+        base = Path(job_dir(job_id)).resolve()
+        target = Path(source_file).resolve()
+        if not target.is_relative_to(base):
+            return
+        if target.is_file():
+            target.unlink(missing_ok=True)
+    except Exception:
+        logger.exception(f"failed to clean podcast source video: {job_id}")
 
 
 def _find_output(job_id: str, output_id: str) -> dict:
@@ -382,6 +534,19 @@ def _validate_srt_text(value: str) -> None:
         raise RuntimeError("A legenda nao pode ficar vazia.")
     if "-->" not in text:
         raise RuntimeError("Formato SRT invalido: timestamps ausentes.")
+
+
+def _srt_timestamps(value: str) -> list[str]:
+    return [
+        line.strip()
+        for line in (value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if "-->" in line
+    ]
+
+
+def _validate_srt_timestamps_unchanged(original: str, updated: str) -> None:
+    if _srt_timestamps(original) != _srt_timestamps(updated):
+        raise RuntimeError("Os timestamps da legenda nao podem ser alterados.")
 
 
 def _transcription_initial_eta(source_file: str | None) -> int:

@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Flixo YouTube Downloader</title>
-    <meta name="description" content="Baixe vídeos do YouTube para uso local no pipeline do Flixo." />
+    <title>Baixar vídeo | Flixo</title>
+    <meta name="description" content="Baixe vídeos do YouTube para usar nos seus projetos." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -14,20 +14,16 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
     <main class="shell clipper-shell downloader-shell">
       <section class="hero clipper-hero">
-        <div class="eyebrow">Flixo Downloader</div>
-        <h1>Baixe vídeos do YouTube para trabalhar localmente.</h1>
+        <div class="eyebrow">Download de vídeo</div>
+        <h1>Baixe vídeos do YouTube para usar nos seus projetos.</h1>
         <p class="lead">
-          Cole a URL, escolha a qualidade máxima e salve o MP4 em
-          <code>storage/tasks/downloads</code>.
+          Cole o link, escolha a qualidade e deixe o Flixo preparar o arquivo.
         </p>
         <div class="workspace-tabs">
           <a class="workspace-tab" href="/">Criador por tema</a>
           <a class="workspace-tab" href="/clipper.html">Clipper</a>
-          <a class="workspace-tab" href="/podcast.html">Podcast renderer</a>
         </div>
       </section>
 
@@ -56,8 +52,8 @@
           </div>
           <div class="prompt-actions">
             <div class="helper">
-              <span class="helper-title">yt-dlp local</span>
-              <span>URL → MP4 local → uso no Clipper/Podcast</span>
+              <span class="helper-title">Download rápido</span>
+              <span>Link → vídeo pronto para usar</span>
             </div>
             <button type="submit" id="youtube-download-button">Baixar vídeo</button>
           </div>
@@ -81,7 +77,7 @@
           <div class="panel-header">
             <div>
               <h2>Arquivo baixado</h2>
-              <p id="youtube-download-result-meta">O link do MP4 aparecerá aqui.</p>
+              <p id="youtube-download-result-meta">O vídeo aparecerá aqui.</p>
             </div>
           </div>
           <div id="youtube-download-result" class="clipper-outputs">

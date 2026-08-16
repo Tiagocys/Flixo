@@ -51,15 +51,16 @@ def attach_cover_options(
         if not source_path.is_file():
             continue
 
-        title = str(output.get("title") or f"Podcast short {index}").strip()
+        title = str(output.get("cover_title") or output.get("title") or f"Podcast short {index}").strip()
         duration = float(output.get("duration") or probe_duration(source_path) or 1)
         cover_options = []
+        cover_id = safe_cover_id(output, index)
 
         for variant_index, ratio in enumerate(ratios):
             label = labels[variant_index]
             timestamp = max(0.2, min(duration - 0.2, duration * ratio))
-            frame_path = covers_dir / f"cover-{index:02d}-{label}-frame.jpg"
-            cover_path = covers_dir / f"cover-{index:02d}-{label}.jpg"
+            frame_path = covers_dir / f"cover-{cover_id}-{label}-frame.jpg"
+            cover_path = covers_dir / f"cover-{cover_id}-{label}.jpg"
             extract_frame(source_path, timestamp, frame_path)
             render_cover(frame_path, cover_path, title)
             frame_path.unlink(missing_ok=True)
@@ -80,6 +81,12 @@ def attach_cover_options(
             output["cover_url"] = cover_options[0]["url"]
 
     return generated
+
+
+def safe_cover_id(output: dict, index: int) -> str:
+    raw = str(output.get("id") or f"{index:02d}").strip().lower()
+    safe = "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
+    return safe or f"{index:02d}"
 
 
 def variant_frame_ratios(preferred: float, variants: int) -> list[float]:

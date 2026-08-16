@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Flixo Clipper</title>
+    <title>Clipper</title>
     <meta
       name="description"
-      content="Transforme videos longos em shorts com analise semantica, legendas e enquadramento vertical."
+      content="Transforme vídeos longos e links do YouTube em shorts editáveis com cortes, legendas e capas."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -16,44 +16,43 @@
     />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
-    <main class="shell clipper-shell">
-      <section class="hero clipper-hero">
-        <div class="eyebrow">Flixo Clipper MVP</div>
-        <h1>Vídeo longo entra. Shorts saem.</h1>
-        <p class="lead">
-          Envie um vídeo ou cole um link do YouTube. O sistema transcreve,
-          sugere os melhores cortes e renderiza os selecionados em 9:16.
-        </p>
-        <a class="chip" href="/">Voltar ao criador por tema</a>
-      </section>
+  <body class="clipper-lite">
+    <main class="shell clipper-shell podcast-shell">
+      <header class="clipper-topbar">
+        <div>
+          <p>Clipper</p>
+          <h1>Crie shorts a partir de um vídeo do YouTube.</h1>
+        </div>
+        <nav aria-label="Navegação">
+          <a href="/">Início</a>
+          <a href="/youtube-download.html">Baixar YouTube</a>
+        </nav>
+      </header>
 
       <section class="clipper-grid">
-        <form id="clipper-form" class="panel clipper-input-panel">
+        <form id="podcast-form" class="panel clipper-input-panel">
           <div class="panel-header">
             <div>
-              <h2>Entrada</h2>
-              <p>Use arquivo local para o primeiro teste. YouTube depende do yt-dlp disponível no backend.</p>
+              <h2>Novo projeto</h2>
+              <p>Cole um link do YouTube ou envie um vídeo. A análise continua mesmo que você feche a página.</p>
             </div>
           </div>
           <div class="clipper-inputs">
             <div class="field">
-              <label for="clipper-url">URL do YouTube ou MP4</label>
-              <input id="clipper-url" name="url" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+              <label for="podcast-url">Link do YouTube ou vídeo</label>
+              <input id="podcast-url" type="url" placeholder="https://www.youtube.com/watch?v=..." />
             </div>
             <div class="field">
-              <label for="clipper-file">Arquivo de vídeo</label>
-              <input id="clipper-file" name="file" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska" />
+              <label for="podcast-file">Arquivo de vídeo</label>
+              <input id="podcast-file" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska" />
             </div>
           </div>
           <div class="prompt-actions">
             <div class="helper">
-              <span class="helper-title">Análise semântica</span>
-              <span>transcrição → ranking → seleção → shorts verticais</span>
+              <span class="helper-title">Fluxo padrão</span>
+              <span>transcrição → melhores cortes → shorts editáveis</span>
             </div>
-            <button type="submit" id="clipper-submit-button">Analisar vídeo</button>
+            <button type="submit" id="podcast-submit-button">Criar projeto</button>
           </div>
         </form>
 
@@ -61,59 +60,91 @@
           <div class="panel-header">
             <div>
               <h2>Status</h2>
-              <p id="clipper-status-meta">Nenhuma análise iniciada.</p>
+              <p id="podcast-status-meta">Nenhum projeto iniciado.</p>
             </div>
-            <div class="status-pill" id="clipper-status-pill">Parado</div>
+            <div class="status-actions">
+              <div class="status-pill" id="podcast-status-pill">Parado</div>
+              <button type="button" id="podcast-cancel-button" class="secondary-button danger-button" hidden>
+                Interromper processo
+              </button>
+            </div>
           </div>
-          <div class="progress-track">
-            <div id="clipper-progress-bar" class="progress-bar" style="width: 0%"></div>
+          <div class="stage-progress" id="podcast-stage-progress" aria-label="Progresso por etapa">
+            <div class="stage-progress-line" aria-hidden="true">
+              <div class="stage-progress-fill"></div>
+            </div>
+            <div class="stage-item" data-stage="ingesting">
+              <span>1</span>
+              <strong>Preparando</strong>
+            </div>
+            <div class="stage-item" data-stage="transcribing">
+              <span>2</span>
+              <strong>Transcrevendo</strong>
+            </div>
+            <div class="stage-item" data-stage="analyzing">
+              <span>3</span>
+              <strong>Analisando IA</strong>
+            </div>
+            <div class="stage-item" data-stage="ready">
+              <span>4</span>
+              <strong>Cortes prontos</strong>
+            </div>
+            <div class="stage-item" data-stage="rendering">
+              <span>5</span>
+              <strong>Renderizando</strong>
+            </div>
+            <div class="stage-item" data-stage="done">
+              <span>6</span>
+              <strong>Finalizado</strong>
+            </div>
           </div>
-          <div id="clipper-error" class="clipper-error" hidden></div>
+          <div id="podcast-error" class="clipper-error" hidden></div>
         </section>
 
-        <section class="panel clipper-candidates-panel">
+        <section class="panel clipper-candidates-panel" hidden>
           <div class="panel-header">
             <div>
               <h2>Cortes sugeridos</h2>
-              <p id="clipper-candidates-meta">Aguardando transcrição e análise.</p>
+              <p id="podcast-candidates-meta">Aguardando transcrição e análise.</p>
             </div>
-            <button type="button" id="clipper-render-button" class="secondary-button" disabled>
-              Gerar shorts selecionados
+            <button type="button" id="podcast-render-button" class="secondary-button" disabled>
+              Renderizar selecionados
             </button>
           </div>
-          <div id="clipper-candidates" class="clipper-candidates">
+          <div id="podcast-candidates" class="clipper-candidates">
             <div class="empty-state">Os candidatos aparecerão aqui.</div>
           </div>
         </section>
 
-        <section class="panel clipper-outputs-panel">
+        <section class="panel clipper-outputs-panel" hidden>
           <div class="panel-header">
             <div>
               <h2>Shorts renderizados</h2>
-              <p id="clipper-outputs-meta">Selecione cortes para gerar os MP4s finais.</p>
-              <p id="youtube-status-meta">YouTube não conectado.</p>
+              <p id="podcast-outputs-meta">Renderize cortes para ver seus shorts prontos.</p>
+              <p id="podcast-youtube-status-meta">YouTube não conectado.</p>
             </div>
             <div class="output-header-actions">
-              <button type="button" id="youtube-connect-button" class="secondary-button">
-                Conectar YouTube
+              <button type="button" id="podcast-youtube-connect-button" class="secondary-button youtube-connect-button">
+                <span class="youtube-button-icon" aria-hidden="true"></span>
+                <span>Conectar YouTube</span>
               </button>
-              <button type="button" id="youtube-upload-all-button" class="secondary-button" disabled>
-                Enviar todos e limpar projeto
+              <button type="button" id="podcast-youtube-upload-all-button" class="secondary-button" disabled>
+                Enviar todos
               </button>
             </div>
           </div>
           <div class="youtube-settings">
             <div class="field">
-              <label for="youtube-privacy">Visibilidade</label>
-              <select id="youtube-privacy">
+              <label for="podcast-youtube-privacy">Visibilidade</label>
+              <select id="podcast-youtube-privacy">
                 <option value="private" selected>Privado</option>
                 <option value="unlisted">Não listado</option>
                 <option value="public">Público</option>
               </select>
             </div>
             <div class="field">
-              <label for="youtube-video-language">Língua do vídeo</label>
-              <select id="youtube-video-language">
+              <label for="podcast-youtube-video-language">Língua do vídeo</label>
+              <select id="podcast-youtube-video-language">
                 <option value="pt-BR" selected>Português (Brasil)</option>
                 <option value="pt-PT">Português (Portugal)</option>
                 <option value="en-US">Inglês (EUA)</option>
@@ -121,17 +152,8 @@
               </select>
             </div>
             <div class="field">
-              <label for="youtube-audio-language">Língua do áudio</label>
-              <select id="youtube-audio-language">
-                <option value="pt-BR" selected>Português (Brasil)</option>
-                <option value="pt-PT">Português (Portugal)</option>
-                <option value="en-US">Inglês (EUA)</option>
-                <option value="es">Espanhol</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="youtube-caption-language">Língua da legenda</label>
-              <select id="youtube-caption-language">
+              <label for="podcast-youtube-caption-language">Língua da legenda</label>
+              <select id="podcast-youtube-caption-language">
                 <option value="pt-BR" selected>Português (Brasil)</option>
                 <option value="pt-PT">Português (Portugal)</option>
                 <option value="en-US">Inglês (EUA)</option>
@@ -139,13 +161,25 @@
               </select>
             </div>
           </div>
-          <div id="clipper-outputs" class="clipper-outputs">
+          <div id="podcast-outputs" class="clipper-outputs">
             <div class="empty-state">Nenhum short renderizado ainda.</div>
+          </div>
+        </section>
+
+        <section class="panel clipper-history-panel" hidden>
+          <div class="panel-header">
+            <div>
+              <h2>Histórico de projetos</h2>
+              <p id="podcast-history-meta">Carregando seus projetos.</p>
+            </div>
+          </div>
+          <div id="podcast-history" class="clipper-history-list">
+            <div class="empty-state">Nenhum projeto encontrado.</div>
           </div>
         </section>
       </section>
     </main>
     <script src="/auth.js" defer></script>
-    <script src="/clipper.js" defer></script>
+    <script src="/podcast.js" defer></script>
   </body>
 </html>

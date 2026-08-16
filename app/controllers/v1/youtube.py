@@ -1,4 +1,4 @@
-from fastapi import Query
+from fastapi import BackgroundTasks, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,7 @@ class YouTubeUploadRequest(BaseModel):
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
     cover_url: str | None = None
+    cover_key: str | None = None
     privacy_status: str = Field(default="private", pattern="^(private|unlisted|public)$")
     video_language: str = "pt-BR"
     audio_language: str = "pt-BR"
@@ -28,6 +29,7 @@ class YouTubeJobUploadRequest(BaseModel):
     overrides: dict[str, dict[str, str | list[str]]] = Field(default_factory=dict)
     privacy_status: str = Field(default="private", pattern="^(private|unlisted|public)$")
     cleanup_after_upload: bool = True
+    archive_after_upload: bool = True
     video_language: str = "pt-BR"
     audio_language: str = "pt-BR"
     caption_language: str = "pt-BR"
@@ -45,6 +47,15 @@ def youtube_channels():
     except RuntimeError as exc:
         raise HttpException(task_id="", status_code=400, message=str(exc))
     return utils.get_response(200, {"channels": channels})
+
+
+@router.get("/youtube/i18n-options", summary="List YouTube languages and regions")
+def youtube_i18n_options():
+    try:
+        options = youtube_uploader.list_i18n_options()
+    except RuntimeError as exc:
+        raise HttpException(task_id="", status_code=400, message=str(exc))
+    return utils.get_response(200, options)
 
 
 @router.get("/youtube/oauth/start", summary="Start YouTube OAuth flow")
@@ -83,6 +94,7 @@ def youtube_upload(body: YouTubeUploadRequest):
             description=body.description,
             tags=body.tags,
             cover_url=body.cover_url,
+            cover_key=body.cover_key,
             privacy_status=body.privacy_status,
             video_language=body.video_language,
             audio_language=body.audio_language,
@@ -120,6 +132,7 @@ def youtube_upload_podcast(body: YouTubeUploadRequest):
             description=body.description,
             tags=body.tags,
             cover_url=body.cover_url,
+            cover_key=body.cover_key,
             privacy_status=body.privacy_status,
             video_language=body.video_language,
             audio_language=body.audio_language,
@@ -131,7 +144,7 @@ def youtube_upload_podcast(body: YouTubeUploadRequest):
 
 
 @router.post("/youtube/upload-podcast-job", summary="Upload all rendered podcast shorts and clean local job")
-def youtube_upload_podcast_job(body: YouTubeJobUploadRequest):
+def youtube_upload_podcast_job(body: YouTubeJobUploadRequest, background_tasks: BackgroundTasks):
     try:
         result = youtube_uploader.upload_podcast_job(
             job_id=body.job_id,
@@ -142,6 +155,9 @@ def youtube_upload_podcast_job(body: YouTubeJobUploadRequest):
             audio_language=body.audio_language,
             caption_language=body.caption_language,
         )
+        if body.archive_after_upload:
+            background_tasks.add_task(youtube_uploader.compress_podcast_job_for_history, body.job_id)
+            result["archive"] = {"compression_scheduled": True}
     except RuntimeError as exc:
         raise HttpException(task_id=body.job_id, status_code=400, message=str(exc))
     return utils.get_response(200, result)

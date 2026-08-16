@@ -16,6 +16,7 @@ from app.services.podcast.pipeline import (
     read_output_subtitle,
     render_job,
     restore_job_from_metadata,
+    update_output_metadata,
     update_output_subtitle,
     update_output_subtitle_mode,
 )
@@ -39,6 +40,13 @@ class PodcastSubtitleModeRequest(BaseModel):
     burn_subtitles: bool = True
 
 
+class PodcastOutputMetadataRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=5000)
+    tags: list[str] = Field(default_factory=list)
+    cover_title: str | None = Field(default=None, max_length=80)
+
+
 class PodcastOutputEditRequest(BaseModel):
     trim_start: float = Field(default=0, ge=0)
     trim_end: float = Field(gt=0)
@@ -49,6 +57,18 @@ class PodcastOutputEditRequest(BaseModel):
 def _ensure_owner(job, user_id: str | None):
     if user_id and job.user_id and job.user_id != user_id:
         raise HttpException(task_id=job.id, status_code=404, message="Podcast job nao encontrado.")
+
+
+def _job_title(job) -> str:
+    for output in job.outputs or []:
+        title = str(output.get("title") or "").strip()
+        if title:
+            return title
+    if job.original_name:
+        return job.original_name
+    if job.source_url:
+        return job.source_url
+    return "Projeto de clipes"
 
 
 def _public_response(job_id: str, include_transcript: bool = False, user_id: str | None = None):
@@ -71,6 +91,10 @@ def list_podcast_jobs(
             "current_step": job.current_step,
             "progress": job.progress,
             "outputs_count": len(job.outputs or []),
+            "title": _job_title(job),
+            "source_url": job.source_url,
+            "r2_outputs_count": sum(1 for output in job.outputs or [] if output.get("video_key") or output.get("r2_video_key")),
+            "created_at": job.created_at,
             "updated_at": job.updated_at,
         }
         for job in registry.list_jobs(limit, user_id=x_flixo_user_id)
@@ -211,6 +235,31 @@ def update_podcast_output_subtitle_mode(
     _ensure_owner(job, x_flixo_user_id)
     try:
         output = update_output_subtitle_mode(job_id, output_id, body.burn_subtitles)
+    except RuntimeError as exc:
+        raise HttpException(task_id=job_id, status_code=400, message=str(exc))
+    return utils.get_response(200, {"output": output})
+
+
+@router.put("/podcast/jobs/{job_id}/outputs/{output_id}/metadata", summary="Update rendered podcast metadata")
+def update_podcast_output_metadata(
+    job_id: str,
+    output_id: str,
+    body: PodcastOutputMetadataRequest,
+    x_flixo_user_id: Annotated[str | None, Header(alias="X-Flixo-User-Id")] = None,
+):
+    job = registry.get_job(job_id) or restore_job_from_metadata(job_id)
+    if not job:
+        raise HttpException(task_id=job_id, status_code=404, message="Podcast job nao encontrado.")
+    _ensure_owner(job, x_flixo_user_id)
+    try:
+        output = update_output_metadata(
+            job_id=job_id,
+            output_id=output_id,
+            title=body.title,
+            description=body.description,
+            tags=body.tags,
+            cover_title=body.cover_title,
+        )
     except RuntimeError as exc:
         raise HttpException(task_id=job_id, status_code=400, message=str(exc))
     return utils.get_response(200, {"output": output})

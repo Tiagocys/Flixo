@@ -1,15 +1,10 @@
 import type { WorkerEnv } from "../../_lib/types";
-
-function backendUrl(env: WorkerEnv, path: string): string {
-  const base = (env.MONEYPRINTER_API_URL || "").replace(/\/+$/, "");
-  return `${base}/api/v1${path}`;
-}
+import { backendNotConfiguredResponse, moneyPrinterUrl } from "../../_lib/backend";
 
 export const onRequestPost: PagesFunction<WorkerEnv> = async ({ request, env }) => {
-  if (!env.MONEYPRINTER_API_URL) {
-    return Response.json({ error: "MoneyPrinterTurbo backend nao configurado." }, { status: 503 });
-  }
-  const response = await fetch(backendUrl(env, "/youtube/upload"), {
+  const url = moneyPrinterUrl(env, request, "/youtube/upload");
+  if (!url) return backendNotConfiguredResponse();
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

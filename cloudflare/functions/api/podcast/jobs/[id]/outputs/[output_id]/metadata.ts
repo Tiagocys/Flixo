@@ -10,7 +10,7 @@ export const onRequestPut: PagesFunction<WorkerEnv> = async ({ params, request, 
   const url = moneyPrinterUrl(
     env,
     request,
-    `/podcast/jobs/${encodeURIComponent(id)}/outputs/${encodeURIComponent(outputId)}/subtitle-mode`,
+    `/podcast/jobs/${encodeURIComponent(id)}/outputs/${encodeURIComponent(outputId)}/metadata`,
   );
   if (!url) return backendNotConfiguredResponse();
   const response = await fetch(

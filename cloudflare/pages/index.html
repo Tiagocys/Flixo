@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MoneyPrinterTurbo Cloud</title>
+    <title>Flixo</title>
     <meta
       name="description"
-      content="Crie vídeos curtos a partir de um prompt com um fluxo simples e pronto para Cloudflare Pages."
+      content="Transforme vídeos longos e links do YouTube em shorts editáveis com cortes, legendas, capas, histórico e upload para YouTube."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -17,16 +17,113 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
     <main class="shell">
       <section class="hero">
-        <div class="eyebrow">MoneyPrinterTurbo Cloud</div>
-        <h1>Digite um tema. A pipeline faz o resto.</h1>
-        <p class="lead">
-          Roteiro, narração, busca de mídia, legendas e renderização em um fluxo
-          único, com Pages, Workers, R2 e Supabase.
-        </p>
+        <div class="hero-copy">
+          <div class="eyebrow">Flixo Clipper</div>
+          <h1>Transforme vídeos longos em shorts prontos para publicar.</h1>
+          <p class="lead">
+            Cole um link do YouTube ou envie um vídeo longo. A IA encontra os
+            melhores cortes, renderiza shorts verticais, permite editar
+            legendas, cortes e capas, salva tudo no seu histórico e envia para o
+            YouTube.
+          </p>
+          <div class="hero-actions">
+            <a class="primary-link" href="/clipper.html">Abrir Clipper</a>
+            <a class="secondary-link" href="#studio-workspace">Ver outros modos</a>
+          </div>
+        </div>
+
+        <a class="clipper-machine" href="/clipper.html" aria-label="Abrir Clipper">
+          <div class="machine-head">
+            <span class="machine-kicker">Máquina principal</span>
+            <strong>Clipper</strong>
+          </div>
+          <div class="machine-input">
+            <span>Entrada</span>
+            <strong>youtube.com/watch?v=...</strong>
+          </div>
+          <div class="machine-core" aria-hidden="true">
+            <div class="scanner-line"></div>
+            <div class="machine-step">
+              <span>01</span>
+              <strong>Detecta ganchos</strong>
+            </div>
+            <div class="machine-step">
+              <span>02</span>
+              <strong>Corta vertical</strong>
+            </div>
+            <div class="machine-step">
+              <span>03</span>
+              <strong>Edita e publica</strong>
+            </div>
+          </div>
+          <div class="shorts-output" aria-hidden="true">
+            <div class="short-card short-card-a">
+              <span>00:24</span>
+              <strong>Short 1</strong>
+            </div>
+            <div class="short-card short-card-b">
+              <span>00:38</span>
+              <strong>Short 2</strong>
+            </div>
+            <div class="short-card short-card-c">
+              <span>00:31</span>
+              <strong>Short 3</strong>
+            </div>
+          </div>
+        </a>
+      </section>
+
+      <section class="mode-overview" aria-label="Modos de criação">
+        <a class="mode-card mode-card-primary" href="/clipper.html">
+          <span class="mode-label">Principal</span>
+          <h2>Clipper</h2>
+          <p>
+            YouTube ou upload entram como vídeo longo; saem shorts editáveis com
+            legendas, cortes, capas, histórico e envio para YouTube.
+          </p>
+          <span class="mode-cta">Começar pelos cortes</span>
+        </a>
+        <a
+          class="mode-card"
+          href="#studio-workspace"
+          data-mode-tab="ai"
+        >
+          <span class="mode-label">BytePlus</span>
+          <h2>Criar vídeo com IA</h2>
+          <p>Gere um clipe vertical curto a partir de prompt e envie para a timeline.</p>
+          <span class="mode-cta">Abrir prompt</span>
+        </a>
+        <a
+          class="mode-card"
+          href="#studio-workspace"
+          data-mode-tab="full"
+        >
+          <span class="mode-label">Banco de mídia</span>
+          <h2>Montar vídeo</h2>
+          <p>Combine narração, legendas e clipes do Pexels ou imagens do Pixabay.</p>
+          <span class="mode-cta">Montar com mídia</span>
+        </a>
+        <a class="mode-card" href="/youtube-download.html">
+          <span class="mode-label">Utilitário</span>
+          <h2>Baixar YouTube</h2>
+          <p>Use quando precisar trazer um vídeo do YouTube para reuso no fluxo.</p>
+          <span class="mode-cta">Abrir downloader</span>
+        </a>
+      </section>
+
+      <section class="studio" id="studio-workspace">
+        <div class="studio-heading">
+          <div>
+            <div class="eyebrow">Estúdio secundário</div>
+            <h2>Crie, monte e acompanhe seus vídeos sem sair da página.</h2>
+          </div>
+          <p>
+            Os controles abaixo mantêm os fluxos existentes de prompt, vídeo
+            completo, biblioteca de mídia e narração.
+          </p>
+        </div>
 
         <div class="workspace-tabs" role="tablist" aria-label="Ferramentas de criação">
           <button
@@ -73,8 +170,7 @@
           >
             Criar narração
           </button>
-          <a class="workspace-tab" href="/clipper.html">Cortar vídeo longo</a>
-          <a class="workspace-tab" href="/podcast.html">Podcast renderer</a>
+          <a class="workspace-tab" href="/clipper.html">Clipper</a>
           <a class="workspace-tab" href="/youtube-download.html">Baixar YouTube</a>
         </div>
 
@@ -109,7 +205,7 @@
             <div class="prompt-actions">
               <div class="helper">
                 <span class="helper-title">Criação visual</span>
-                <span>Prompt → clipe curto → R2 → timeline</span>
+                <span>Prompt → clipe curto → timeline</span>
               </div>
               <button type="submit" id="submit-button">Gerar clipe</button>
             </div>
@@ -223,7 +319,7 @@
             <div class="prompt-actions">
               <div class="helper">
                 <span class="helper-title">Fluxo completo</span>
-                <span>tema → sugestão de mídia → seleção → narração/legenda → MP4</span>
+                <span>tema → sugestão de mídia → seleção → narração/legenda → vídeo</span>
               </div>
               <button type="submit" id="full-video-button">Gerar com selecionados</button>
             </div>
@@ -259,7 +355,7 @@
             <div class="prompt-actions">
               <div class="helper">
                 <span class="helper-title">Narração</span>
-                <span>Texto → MP3 → R2 → timeline</span>
+                <span>Texto → narração → timeline</span>
               </div>
               <button type="submit" id="tts-button">Gerar áudio</button>
             </div>
@@ -296,7 +392,7 @@
             <div class="prompt-actions">
               <div class="helper">
                 <span class="helper-title">Biblioteca Pexels</span>
-                <span>Busca clipes verticais e salva no R2 quando disponível.</span>
+                <span>Busca clipes verticais para montar seu vídeo.</span>
               </div>
               <button type="submit" id="media-search-button">Buscar vídeos</button>
             </div>
@@ -314,7 +410,7 @@
       <section class="dashboard">
         <div class="panel panel-summary" hidden>
           <div class="panel-header">
-            <h2>Estado da stack</h2>
+            <h2>Serviços conectados</h2>
             <div class="status-pill" id="infra-pill">Carregando...</div>
           </div>
           <div class="summary-grid" id="infra-grid"></div>
@@ -323,18 +419,18 @@
         <div class="panel panel-flow" hidden>
           <div class="panel-header">
             <h2>Pipeline</h2>
-            <p>Uma execução simples, visível e rastreável.</p>
+            <p>Uma criação simples, visível e rastreável.</p>
           </div>
           <div id="pipeline" class="pipeline"></div>
         </div>
 
         <div class="panel panel-job">
           <div class="panel-header">
-            <h2>Último job</h2>
-            <p id="job-meta">Nenhuma execução iniciada ainda.</p>
+            <h2>Última criação</h2>
+            <p id="job-meta">Nenhuma criação iniciada ainda.</p>
           </div>
           <div id="job-detail" class="job-detail empty">
-            Digite um prompt e envie para criar sua primeira execução.
+            Digite um prompt e envie para criar seu primeiro vídeo.
           </div>
         </div>
 
@@ -349,7 +445,7 @@
             <audio id="timeline-audio" preload="metadata"></audio>
             <div class="timeline-preview-copy">
               <strong id="timeline-player-title">Insira um vídeo na timeline para começar.</strong>
-              <span id="timeline-player-meta">O preview usa os clipes da timeline sem renderizar o MP4 final.</span>
+              <span id="timeline-player-meta">Veja uma prévia antes da exportação final.</span>
               <div class="timeline-preview-actions">
                 <button type="button" id="timeline-play-button" class="secondary-button" disabled>
                   Play timeline
@@ -386,7 +482,7 @@
         <div class="panel panel-history">
           <div class="panel-header">
             <h2>Histórico recente</h2>
-            <p>Jobs salvos no Supabase ou no fallback local de desenvolvimento.</p>
+            <p>Suas criações recentes aparecem aqui.</p>
           </div>
           <div id="history" class="history"></div>
         </div>

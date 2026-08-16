@@ -2,7 +2,7 @@ import type { WorkerEnv } from "../../_lib/types";
 import { backendNotConfiguredResponse, moneyPrinterUrl } from "../../_lib/backend";
 
 export const onRequestGet: PagesFunction<WorkerEnv> = async ({ request, env }) => {
-  const url = moneyPrinterUrl(env, request, "/youtube/channels");
+  const url = moneyPrinterUrl(env, request, "/youtube/i18n-options");
   if (!url) return backendNotConfiguredResponse();
   const response = await fetch(url, {
     headers: {

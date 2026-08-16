@@ -4,6 +4,7 @@ from threading import Lock
 import time
 from typing import Callable
 
+from app.services import clipper_database
 from app.services.clipper.models import ClipperJob, clipper_job_from_dict
 from app.utils import utils
 
@@ -33,6 +34,8 @@ def get_job(job_id: str) -> ClipperJob | None:
         if job:
             return job
         job = _load_job(job_id)
+        if not job:
+            job = clipper_database.get_job(job_id)
         if job:
             _jobs[job_id] = job
         return job
@@ -41,6 +44,10 @@ def get_job(job_id: str) -> ClipperJob | None:
 def list_jobs(limit: int = 10, user_id: str | None = None) -> list[ClipperJob]:
     with _lock:
         _load_disk_jobs()
+        jobs = list(_jobs.values())
+        db_jobs = clipper_database.list_jobs(limit, user_id=user_id)
+        for db_job in db_jobs:
+            _jobs[db_job.id] = db_job
         jobs = list(_jobs.values())
     if user_id:
         jobs = [job for job in jobs if job.user_id == user_id]
@@ -99,6 +106,7 @@ def _save_job(job: ClipperJob) -> None:
     job.metadata_path = path
     with open(path, "w", encoding="utf-8") as file:
         json.dump(job.to_dict(include_transcript=True), file, ensure_ascii=False, indent=2)
+    clipper_database.upsert_job(job)
 
 
 def _load_job(job_id: str) -> ClipperJob | None:

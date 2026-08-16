@@ -3,16 +3,18 @@ import mimetypes
 import os
 import re
 import shutil
+import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 import requests
 from dotenv import load_dotenv
 
+from app.services import r2_storage
 from app.services.clipper import registry
 from app.services.clipper.ingest import job_dir
 from app.services.podcast import registry as podcast_registry
@@ -25,6 +27,9 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 THUMBNAIL_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+I18N_LANGUAGES_URL = "https://www.googleapis.com/youtube/v3/i18nLanguages"
+I18N_REGIONS_URL = "https://www.googleapis.com/youtube/v3/i18nRegions"
+I18N_CACHE_TTL_SECONDS = 24 * 60 * 60
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
@@ -80,6 +85,29 @@ def list_authorized_channels() -> list[dict[str, Any]]:
             }
         )
     return channels
+
+
+def list_i18n_options(hl: str = "pt-BR") -> dict[str, list[dict[str, str]]]:
+    cached = _read_i18n_cache()
+    if cached:
+        return cached
+
+    access_token = _access_token()
+    languages = _fetch_i18n_list(
+        I18N_LANGUAGES_URL,
+        access_token,
+        params={"part": "snippet", "hl": hl},
+        fallback_message="Falha ao listar idiomas do YouTube.",
+    )
+    regions = _fetch_i18n_list(
+        I18N_REGIONS_URL,
+        access_token,
+        params={"part": "snippet", "hl": hl},
+        fallback_message="Falha ao listar paises do YouTube.",
+    )
+    data = {"languages": languages, "regions": regions}
+    _write_i18n_cache(data)
+    return data
 
 
 def authorization_url(frontend_url: str | None = None) -> str:
@@ -138,6 +166,7 @@ def upload_clipper_output(
     description: str | None = None,
     tags: list[str] | None = None,
     cover_url: str | None = None,
+    cover_key: str | None = None,
     privacy_status: str = "private",
     video_language: str = "pt-BR",
     audio_language: str = "pt-BR",
@@ -175,8 +204,14 @@ def upload_clipper_output(
     video_id = youtube_response.get("id")
     if not video_id:
         raise RuntimeError("YouTube concluiu o upload, mas nao retornou o ID do video.")
-    thumbnail_id, thumbnail_error = _try_upload_thumbnail(access_token, video_id, cover_url or output.get("cover_url"))
+    thumbnail_result, thumbnail_error = _try_upload_thumbnail(
+        access_token,
+        video_id,
+        cover_url or output.get("cover_url"),
+        cover_key or output.get("cover_key"),
+    )
     return {
+        "output_id": output_id,
         "video_id": video_id,
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "title": video_title,
@@ -184,7 +219,8 @@ def upload_clipper_output(
         "video_language": video_lang,
         "audio_language": audio_lang,
         "caption_language": caption_lang,
-        "thumbnail_id": thumbnail_id,
+        "thumbnail_id": thumbnail_result.get("etag") if thumbnail_result else None,
+        "thumbnail_urls": thumbnail_result.get("thumbnails") if thumbnail_result else {},
         "thumbnail_error": thumbnail_error,
     }
 
@@ -196,6 +232,7 @@ def upload_podcast_output(
     description: str | None = None,
     tags: list[str] | None = None,
     cover_url: str | None = None,
+    cover_key: str | None = None,
     privacy_status: str = "private",
     video_language: str = "pt-BR",
     audio_language: str = "pt-BR",
@@ -203,18 +240,21 @@ def upload_podcast_output(
 ) -> dict[str, Any]:
     output = _find_podcast_output(job_id, output_id)
     _hydrate_podcast_output_metadata(job_id, output)
-    return _upload_output(
+    result = _upload_output(
         output=output,
         video_title=(title or output.get("title") or "Podcast short criado pelo Flixo").strip()[:100],
         video_description=(description or _description_from_output(output, title or output.get("title") or "podcast")).strip(),
         tags=tags,
         cover_url=cover_url,
+        cover_key=cover_key,
         privacy_status=privacy_status,
         video_language=video_language,
         audio_language=audio_language,
         caption_language=caption_language,
         task_root="podcast",
     )
+    result["output_id"] = output_id
+    return result
 
 
 def _upload_output(
@@ -223,6 +263,7 @@ def _upload_output(
     video_description: str,
     tags: list[str] | None,
     cover_url: str | None,
+    cover_key: str | None,
     privacy_status: str,
     video_language: str,
     audio_language: str,
@@ -257,8 +298,14 @@ def _upload_output(
     video_id = youtube_response.get("id")
     if not video_id:
         raise RuntimeError("YouTube concluiu o upload, mas nao retornou o ID do video.")
-    thumbnail_id, thumbnail_error = _try_upload_thumbnail(access_token, video_id, cover_url or output.get("cover_url"))
+    thumbnail_result, thumbnail_error = _try_upload_thumbnail(
+        access_token,
+        video_id,
+        cover_url or output.get("cover_url"),
+        cover_key or output.get("cover_key"),
+    )
     return {
+        "output_id": str(output.get("id") or ""),
         "video_id": video_id,
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "title": video_title,
@@ -266,7 +313,8 @@ def _upload_output(
         "video_language": video_lang,
         "audio_language": audio_lang,
         "caption_language": caption_lang,
-        "thumbnail_id": thumbnail_id,
+        "thumbnail_id": thumbnail_result.get("etag") if thumbnail_result else None,
+        "thumbnail_urls": thumbnail_result.get("thumbnails") if thumbnail_result else {},
         "thumbnail_error": thumbnail_error,
     }
 
@@ -299,6 +347,7 @@ def upload_clipper_job(
                 description=_optional_str(custom.get("description")),
                 tags=_normalize_tags(custom.get("tags")),
                 cover_url=_optional_str(custom.get("cover_url")),
+                cover_key=_optional_str(custom.get("cover_key")),
                 privacy_status=privacy_status,
                 video_language=video_language,
                 audio_language=audio_language,
@@ -346,6 +395,7 @@ def upload_podcast_job(
                 description=_optional_str(custom.get("description")),
                 tags=_normalize_tags(custom.get("tags")),
                 cover_url=_optional_str(custom.get("cover_url")),
+                cover_key=_optional_str(custom.get("cover_key")),
                 privacy_status=privacy_status,
                 video_language=video_language,
                 audio_language=audio_language,
@@ -353,6 +403,7 @@ def upload_podcast_job(
             )
         )
 
+    _mark_podcast_job_uploaded(job_id, uploads)
     cleaned = False
     if cleanup_after_upload:
         _cleanup_podcast_job(job_id)
@@ -363,6 +414,122 @@ def upload_podcast_job(
         "uploads": uploads,
         "cleanup": cleaned,
     }
+
+
+def _mark_podcast_job_uploaded(job_id: str, uploads: list[dict[str, Any]]) -> None:
+    if not podcast_registry.get_job(job_id):
+        return
+    uploads_by_output = {
+        str(upload.get("output_id") or ""): upload
+        for upload in uploads
+        if upload.get("output_id")
+    }
+
+    def apply(job):
+        job.status = "done"
+        job.current_step = "done"
+        job.progress = 100
+        for output in job.outputs:
+            output_id = str(output.get("id") or "")
+            upload = uploads_by_output.get(output_id)
+            if not upload:
+                continue
+            output["youtube_uploaded"] = True
+            output["youtube_uploaded_at"] = int(time.time())
+            output["youtube_video_id"] = upload.get("video_id")
+            output["youtube_url"] = upload.get("url")
+            output["youtube_thumbnail_id"] = upload.get("thumbnail_id")
+            output["youtube_thumbnail_urls"] = upload.get("thumbnail_urls") or {}
+            output["youtube_thumbnail_error"] = upload.get("thumbnail_error")
+            output["history_status"] = "uploaded"
+            output["archive_compression_status"] = "queued"
+
+    podcast_registry.update_job(job_id, apply)
+
+
+def compress_podcast_job_for_history(job_id: str) -> dict[str, Any]:
+    job = podcast_registry.get_job(job_id)
+    if not job:
+        return {"job_id": job_id, "compressed": 0, "skipped": 0, "errors": ["job not found"]}
+    if not r2_storage.configured():
+        _mark_archive_compression(job_id, status="skipped", error="R2 nao configurado.")
+        return {"job_id": job_id, "compressed": 0, "skipped": len(job.outputs or []), "errors": ["R2 not configured"]}
+
+    compressed = 0
+    skipped = 0
+    errors = []
+    updated_outputs = []
+    with tempfile.TemporaryDirectory(prefix=f"flixo-archive-{job_id}-") as temp_dir:
+        for output in job.outputs or []:
+            updated = dict(output)
+            output_id = str(updated.get("id") or "")
+            video_key = str(updated.get("video_key") or updated.get("r2_video_key") or "").strip()
+            if not output_id or not video_key:
+                updated["archive_compression_status"] = "skipped"
+                updated_outputs.append(updated)
+                skipped += 1
+                continue
+            if updated.get("r2_archive_compressed"):
+                updated_outputs.append(updated)
+                skipped += 1
+                continue
+            try:
+                source_path = _archive_source_path(updated, video_key, temp_dir)
+                if not source_path:
+                    raise RuntimeError("Video do historico nao encontrado localmente nem no R2.")
+                before_size = source_path.stat().st_size
+                r2_storage.replace_with_archive_compressed(source_path)
+                after_size = source_path.stat().st_size
+                if not r2_storage.upload_file(source_path, video_key, "video/mp4"):
+                    raise RuntimeError("Falha ao reenviar video comprimido para o R2.")
+                updated["video_key"] = video_key
+                updated["r2_video_key"] = video_key
+                updated["video_url"] = r2_storage.public_url(video_key)
+                updated["r2_archive_compressed"] = True
+                updated["r2_archive_original_size"] = before_size
+                updated["r2_archive_size"] = after_size
+                updated["r2_archive_saved_bytes"] = max(0, before_size - after_size)
+                updated["archive_compression_status"] = "done"
+                updated["archive_compressed_at"] = int(time.time())
+                updated.pop("archive_compression_error", None)
+                compressed += 1
+            except Exception as exc:
+                updated["archive_compression_status"] = "failed"
+                updated["archive_compression_error"] = str(exc)
+                errors.append(f"{output_id}: {exc}")
+            updated_outputs.append(updated)
+
+    def apply(job):
+        job.outputs = updated_outputs
+
+    podcast_registry.update_job(job_id, apply)
+    return {"job_id": job_id, "compressed": compressed, "skipped": skipped, "errors": errors}
+
+
+def _mark_archive_compression(job_id: str, status: str, error: str | None = None) -> None:
+    if not podcast_registry.get_job(job_id):
+        return
+
+    def apply(job):
+        for output in job.outputs:
+            output["archive_compression_status"] = status
+            if error:
+                output["archive_compression_error"] = error
+
+    podcast_registry.update_job(job_id, apply)
+
+
+def _archive_source_path(output: dict[str, Any], video_key: str, temp_dir: str) -> Path | None:
+    local_path = Path(str(output.get("video_path") or ""))
+    if local_path.is_file():
+        target = Path(temp_dir) / f"{str(output.get('id') or utils.get_uuid())}.mp4"
+        shutil.copy2(local_path, target)
+        return target
+
+    target = Path(temp_dir) / f"{Path(video_key).stem}.mp4"
+    if r2_storage.download_to_file(video_key, target):
+        return target
+    return None
 
 
 def update_video_metadata(
@@ -406,18 +573,12 @@ def update_video_metadata(
 
 def _normalize_language(value: str | None, fallback: str = "pt-BR") -> str:
     language = (value or fallback).strip()
-    allowed = {
-        "pt-BR",
-        "pt-PT",
-        "en",
-        "en-US",
-        "es",
-        "es-ES",
-        "fr",
-        "de",
-        "it",
-    }
-    return language if language in allowed else fallback
+    if re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}", language):
+        parts = language.split("-")
+        normalized = [parts[0].lower()]
+        normalized.extend(part.upper() if len(part) == 2 else part for part in parts[1:])
+        return "-".join(normalized)
+    return fallback
 
 
 def _credentials() -> YouTubeCredentials:
@@ -455,7 +616,7 @@ def _safe_frontend_url(value: str | None) -> str:
 
 def _default_tags(title: str, description: str) -> list[str]:
     text = _tag_text(title, description)
-    tags = ["shorts", "youtube shorts"]
+    tags: list[str] = []
     _append_matching_tags(text, tags)
     if len(tags) < 6:
         tags.extend(_fallback_keyword_tags(text))
@@ -590,13 +751,65 @@ def _fallback_keyword_tags(text: str) -> list[str]:
         ("gato", "gatos"),
         ("cachorro", "cachorros"),
         ("curiosidade", "curiosidades"),
-        ("podcast", "podcast"),
-        ("youtube", "YouTube"),
+        ("motivacao", "motivacao"),
+        ("empreend", "empreendedorismo"),
+        ("negocio", "negocios"),
+        ("marketing", "marketing digital"),
+        ("ferrari", "Ferrari"),
+        ("oficina", "oficina"),
+        ("mecanica", "mecanica automotiva"),
     )
     for term, tag in mapping:
         if term in text and tag not in tags:
             tags.append(tag)
+    for tag in _keyword_tags_from_text(text):
+        if tag not in tags:
+            tags.append(tag)
     return tags
+
+
+def _keyword_tags_from_text(text: str) -> list[str]:
+    stopwords = {
+        "sobre",
+        "para",
+        "porque",
+        "como",
+        "esse",
+        "essa",
+        "isso",
+        "aquele",
+        "aquela",
+        "muito",
+        "mais",
+        "menos",
+        "quando",
+        "onde",
+        "voce",
+        "eles",
+        "elas",
+        "dele",
+        "dela",
+        "nesse",
+        "nessa",
+        "video",
+        "clip",
+        "clipe",
+        "corte",
+        "momento",
+        "trecho",
+        "fala",
+        "falando",
+        "pessoa",
+        "pessoas",
+    }
+    words = re.findall(r"[a-z0-9]{4,}", text)
+    counts: dict[str, int] = {}
+    for word in words:
+        if word in stopwords or word.isdigit():
+            continue
+        counts[word] = counts.get(word, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))
+    return [word for word, _ in ranked[:6]]
 
 
 def _optional_str(value: Any) -> str | None:
@@ -620,7 +833,6 @@ def _description_from_output(output: dict[str, Any], title: str) -> str:
         parts.append(f"Nesse corte, {hook[:1].lower() + hook[1:]}")
     else:
         parts.append(f"Um momento curto sobre {title.lower()}.")
-    parts.append("#Shorts")
     return "\n\n".join(parts)
 
 
@@ -696,6 +908,10 @@ def _token_path() -> Path:
     return _youtube_dir() / "oauth_token.json"
 
 
+def _i18n_cache_path() -> Path:
+    return _youtube_dir() / "i18n_options.json"
+
+
 def _state_path(state: str) -> Path:
     safe_state = "".join(ch for ch in state if ch.isalnum() or ch == "-")
     return _youtube_dir() / f"oauth_state_{safe_state}.json"
@@ -735,6 +951,58 @@ def _read_token() -> dict[str, Any]:
         raise RuntimeError("YouTube ainda nao foi autorizado. Clique em Conectar YouTube.")
     with path.open(encoding="utf-8") as file:
         return json.load(file)
+
+
+def _read_i18n_cache() -> dict[str, list[dict[str, str]]] | None:
+    path = _i18n_cache_path()
+    if not path.is_file():
+        return None
+    try:
+        with path.open(encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if time.time() - float(data.get("created_at", 0)) > I18N_CACHE_TTL_SECONDS:
+        return None
+    return {
+        "languages": list(data.get("languages") or []),
+        "regions": list(data.get("regions") or []),
+    }
+
+
+def _write_i18n_cache(data: dict[str, list[dict[str, str]]]) -> None:
+    payload = {
+        **data,
+        "created_at": time.time(),
+    }
+    with _i18n_cache_path().open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+def _fetch_i18n_list(
+    url: str,
+    access_token: str,
+    params: dict[str, str],
+    fallback_message: str,
+) -> list[dict[str, str]]:
+    response = requests.get(
+        url,
+        params=params,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(_google_error(response, fallback_message))
+
+    options = []
+    for item in response.json().get("items", []):
+        snippet = item.get("snippet", {}) or {}
+        code = str(snippet.get("hl") or snippet.get("gl") or item.get("id") or "").strip()
+        name = str(snippet.get("name") or code).strip()
+        if code and name:
+            options.append({"code": code, "name": name})
+    return sorted(options, key=lambda option: option["name"].casefold())
 
 
 def _access_token() -> str:
@@ -809,38 +1077,114 @@ def _upload_file(access_token: str, upload_url: str, video_path: Path) -> dict[s
     return response.json()
 
 
-def _try_upload_thumbnail(access_token: str, video_id: str, cover_url: str | None) -> tuple[str | None, str]:
+def _try_upload_thumbnail(
+    access_token: str,
+    video_id: str,
+    cover_url: str | None,
+    cover_key: str | None = None,
+) -> tuple[dict[str, Any] | None, str]:
     try:
-        return _upload_thumbnail(access_token, video_id, cover_url), ""
+        return _upload_thumbnail(access_token, video_id, cover_url, cover_key), ""
     except RuntimeError as exc:
         return None, str(exc)
 
 
-def _upload_thumbnail(access_token: str, video_id: str, cover_url: str | None) -> str | None:
-    thumbnail_path = _thumbnail_path_from_url(cover_url)
+def _upload_thumbnail(
+    access_token: str,
+    video_id: str,
+    cover_url: str | None,
+    cover_key: str | None = None,
+) -> dict[str, Any] | None:
+    resolved_key = _safe_r2_key(cover_key) or _cover_key_from_asset_url(cover_url)
+    thumbnail_path = (
+        _thumbnail_path_from_key(resolved_key)
+        or _download_thumbnail_from_key(resolved_key)
+        or _thumbnail_path_from_url(cover_url)
+        or _download_thumbnail_from_url(cover_url)
+    )
     if not thumbnail_path:
         return None
-    mime_type = mimetypes.guess_type(thumbnail_path.name)[0] or "image/jpeg"
-    with thumbnail_path.open("rb") as file:
-        response = requests.post(
-            THUMBNAIL_UPLOAD_URL,
-            params={"videoId": video_id},
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": mime_type,
-                "Content-Length": str(thumbnail_path.stat().st_size),
-            },
-            data=file,
-            timeout=120,
-        )
-    if response.status_code >= 400:
-        raise RuntimeError(_google_error(response, "Video enviado, mas falhou ao aplicar capa."))
-    return str(response.json().get("etag") or "")
+    temporary = Path(tempfile.gettempdir()).resolve() in thumbnail_path.resolve().parents
+    try:
+        mime_type = mimetypes.guess_type(thumbnail_path.name)[0] or "image/jpeg"
+        with thumbnail_path.open("rb") as file:
+            response = requests.post(
+                THUMBNAIL_UPLOAD_URL,
+                params={"videoId": video_id},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": mime_type,
+                    "Content-Length": str(thumbnail_path.stat().st_size),
+                },
+                data=file,
+                timeout=120,
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(_google_error(response, "Video enviado, mas falhou ao aplicar capa."))
+        payload = response.json()
+        thumbnails = {}
+        for item in payload.get("items", []):
+            if isinstance(item, dict):
+                thumbnails.update(item)
+        return {
+            "etag": str(payload.get("etag") or ""),
+            "thumbnails": thumbnails,
+        }
+    finally:
+        if temporary:
+            thumbnail_path.unlink(missing_ok=True)
+
+
+def _cover_key_from_asset_url(cover_url: str | None) -> str | None:
+    value = str(cover_url or "").strip()
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.path != "/api/assets":
+        return None
+    key = parse_qs(parsed.query).get("key", [""])[0]
+    return _safe_r2_key(unquote(key))
+
+
+def _safe_r2_key(value: str | None) -> str | None:
+    key = str(value or "").strip()
+    if not key or key.startswith("/") or "\\" in key or ".." in key:
+        return None
+    if not key.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+        return None
+    return key
+
+
+def _thumbnail_path_from_key(key: str | None) -> Path | None:
+    if not key:
+        return None
+    tasks_root = (Path(utils.root_dir()).resolve() / "storage" / "tasks").resolve()
+    path = (tasks_root / key).resolve()
+    if path.is_file() and path.is_relative_to(tasks_root):
+        return path
+    return None
+
+
+def _download_thumbnail_from_key(key: str | None) -> Path | None:
+    if not key:
+        return None
+    suffix = Path(key).suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        suffix = ".jpg"
+    fd, path = tempfile.mkstemp(prefix="flixo-youtube-cover-", suffix=suffix)
+    os.close(fd)
+    target = Path(path)
+    if r2_storage.download_to_file(key, target):
+        return target
+    target.unlink(missing_ok=True)
+    return None
 
 
 def _thumbnail_path_from_url(cover_url: str | None) -> Path | None:
     value = str(cover_url or "").strip()
     if not value:
+        return None
+    if value.startswith("http://") or value.startswith("https://"):
         return None
     root = Path(utils.root_dir()).resolve()
     tasks_root = (root / "storage" / "tasks").resolve()
@@ -853,6 +1197,26 @@ def _thumbnail_path_from_url(cover_url: str | None) -> Path | None:
     if not path.is_relative_to(tasks_root):
         raise RuntimeError("Caminho de capa fora da pasta de tasks.")
     return path
+
+
+def _download_thumbnail_from_url(cover_url: str | None) -> Path | None:
+    value = str(cover_url or "").strip()
+    if not (value.startswith("http://") or value.startswith("https://")):
+        return None
+    response = requests.get(value, timeout=60)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Video enviado, mas nao foi possivel baixar a capa selecionada ({response.status_code}).")
+    content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise RuntimeError("Video enviado, mas a capa selecionada nao parece ser uma imagem valida.")
+    suffix = {
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }.get(content_type, ".jpg")
+    fd, path = tempfile.mkstemp(prefix="flixo-youtube-cover-", suffix=suffix)
+    with os.fdopen(fd, "wb") as file:
+        file.write(response.content)
+    return Path(path)
 
 
 def _find_clipper_output(job_id: str, output_id: str) -> dict[str, Any]:

@@ -2,6 +2,9 @@ const state = {
   jobId: null,
   job: null,
   timer: null,
+  historyCount: 0,
+  actionLocked: false,
+  renderSelectionLocked: false,
   youtubeAuthorized: false,
   youtubeConfigured: false,
 };
@@ -18,6 +21,7 @@ const els = {
   statusPill: document.getElementById("podcast-status-pill"),
   cancelButton: document.getElementById("podcast-cancel-button"),
   progressBar: document.getElementById("podcast-progress-bar"),
+  stageProgress: document.getElementById("podcast-stage-progress"),
   error: document.getElementById("podcast-error"),
   candidatesMeta: document.getElementById("podcast-candidates-meta"),
   candidates: document.getElementById("podcast-candidates"),
@@ -29,12 +33,34 @@ const els = {
   youtubeUploadAllButton: document.getElementById("podcast-youtube-upload-all-button"),
   youtubePrivacy: document.getElementById("podcast-youtube-privacy"),
   youtubeVideoLanguage: document.getElementById("podcast-youtube-video-language"),
-  youtubeAudioLanguage: document.getElementById("podcast-youtube-audio-language"),
   youtubeCaptionLanguage: document.getElementById("podcast-youtube-caption-language"),
   removeSilence: document.getElementById("podcast-remove-silence"),
   artificialCuts: document.getElementById("podcast-artificial-cuts"),
   burnSubtitles: document.getElementById("podcast-burn-subtitles"),
+  candidatesPanel: document.querySelector(".clipper-candidates-panel"),
+  outputsPanel: document.querySelector(".clipper-outputs-panel"),
+  historyPanel: document.querySelector(".clipper-history-panel"),
+  historyMeta: document.getElementById("podcast-history-meta"),
+  history: document.getElementById("podcast-history"),
 };
+
+const STAGE_ORDER = ["ingesting", "transcribing", "analyzing", "ready", "rendering", "done"];
+
+const STAGE_MESSAGES = {
+  queued: "Projeto recebido. Vamos preparar o vídeo para análise.",
+  ingesting: "Preparando o vídeo e extraindo informações básicas.",
+  transcribing: "Transcrevendo as falas. Esta etapa varia conforme o tamanho do vídeo.",
+  analyzing: "A IA está entendendo o contexto e procurando os melhores momentos.",
+  ready: "Cortes sugeridos prontos. Selecione os trechos que deseja transformar em shorts.",
+  rendering: "Renderizando os shorts selecionados com cortes, câmera e legenda.",
+  done: "Shorts editáveis prontos.",
+};
+
+function hasActiveProject(job) {
+  if (!job) return false;
+  if (isInterruptedJob(job)) return false;
+  return ["queued", "running", "ready", "rendering", "done"].includes(String(job.status || ""));
+}
 
 function escapeHtml(value) {
   return String(value || "")
@@ -83,18 +109,17 @@ function isInterruptedJob(job) {
 }
 
 function statusMessage(job) {
-  const eta = effectiveEta(job);
-  if (Number.isFinite(eta) && eta > 0 && !["ready", "done", "failed", "cancelled"].includes(job?.status)) {
-    return `Estimativa total: seus shorts editáveis devem ficar prontos em cerca de ${formatEta(eta)}.`;
-  }
   if (["queued", "running", "rendering"].includes(job?.status)) {
-    return "Calculando estimativa total para entregar seus shorts editáveis.";
+    return (
+      STAGE_MESSAGES[normalizedStage(job)] ||
+      "A IA está processando o vídeo. O tempo varia porque priorizamos a qualidade dos cortes."
+    );
   }
   if (job?.status === "ready") {
-    return "Cortes sugeridos prontos. Selecione os trechos que deseja transformar em shorts editáveis.";
+    return STAGE_MESSAGES.ready;
   }
   if (job?.status === "done") {
-    return "Shorts editáveis prontos.";
+    return STAGE_MESSAGES.done;
   }
   if (isInterruptedJob(job)) {
     return "Processo interrompido. Você pode iniciar um novo teste.";
@@ -105,59 +130,69 @@ function statusMessage(job) {
   return "Nenhuma análise iniciada.";
 }
 
-function effectiveEta(job) {
-  const backendEta = Number(job?.estimated_remaining_seconds);
-  const dynamicEta = dynamicEtaFromProgress(job);
-  if (Number.isFinite(backendEta) && backendEta > 0 && Number.isFinite(dynamicEta) && dynamicEta > 0) {
-    return Math.max(backendEta, dynamicEta);
-  }
-  if (Number.isFinite(dynamicEta) && dynamicEta > 0) return dynamicEta;
-  if (Number.isFinite(backendEta) && backendEta > 0) return backendEta;
-  return 0;
+function normalizedStage(job) {
+  if (!job) return "";
+  if (job.status === "done") return "done";
+  if (job.status === "ready") return "ready";
+  if (job.status === "rendering") return "rendering";
+  const step = String(job.current_step || "").toLowerCase();
+  if (STAGE_ORDER.includes(step)) return step;
+  if (job.status === "queued") return "queued";
+  return "ingesting";
 }
 
-function dynamicEtaFromProgress(job) {
-  if (!job || !["running", "rendering"].includes(job.status)) return 0;
-  const startedAt = Number(job.step_started_at || job.created_at || 0);
-  if (!Number.isFinite(startedAt) || startedAt <= 0) return 0;
-  const elapsed = Date.now() / 1000 - startedAt;
-  if (!Number.isFinite(elapsed) || elapsed < 30) return 0;
-
-  const progress = Number(job.progress || 0);
-  let phasePercent = 0;
-  if (job.current_step === "transcribing") {
-    phasePercent = (progress - 35) / 30;
-  } else if (job.current_step === "rendering") {
-    phasePercent = (progress - 15) / 80;
-  } else if (job.current_step === "analyzing") {
-    phasePercent = 0.7;
-  }
-  phasePercent = Math.max(0.05, Math.min(0.97, phasePercent));
-  return Math.round(Math.max(60, Math.min(7200, (elapsed * (1 - phasePercent)) / phasePercent)));
+function stageProgressPercent(job) {
+  const stage = normalizedStage(job);
+  if (!stage || stage === "queued") return 0;
+  const index = STAGE_ORDER.indexOf(stage);
+  if (index < 0) return 0;
+  return Math.round(((index + 1) / STAGE_ORDER.length) * 100);
 }
 
-function formatEta(secondsValue) {
-  const seconds = Math.max(1, Math.round(Number(secondsValue || 0)));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  if (minutes < 60) {
-    return rest ? `${minutes}min ${rest}s` : `${minutes}min`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const hourMinutes = minutes % 60;
-  return hourMinutes ? `${hours}h ${hourMinutes}min` : `${hours}h`;
+function updateStageProgress(job) {
+  if (!els.stageProgress) return;
+  const stage = normalizedStage(job);
+  const activeIndex = STAGE_ORDER.indexOf(stage);
+  const fillPercent =
+    activeIndex >= 0 && STAGE_ORDER.length > 1
+      ? Math.round((activeIndex / (STAGE_ORDER.length - 1)) * 100)
+      : 0;
+  els.stageProgress.dataset.currentStage = stage || "idle";
+  els.stageProgress.style.setProperty("--stage-fill", `${fillPercent}%`);
+  els.stageProgress.querySelectorAll("[data-stage]").forEach((item) => {
+    const index = STAGE_ORDER.indexOf(item.dataset.stage || "");
+    const isDone = activeIndex >= 0 && index < activeIndex;
+    const isActive = activeIndex >= 0 && index === activeIndex;
+    item.classList.toggle("is-done", isDone);
+    item.classList.toggle("is-active", isActive);
+  });
+}
+
+function syncProjectPanels(job = state.job) {
+  const candidates = Array.isArray(job?.candidates) ? job.candidates : [];
+  const outputs = Array.isArray(job?.outputs) ? job.outputs : [];
+  const hasOutputs = outputs.length > 0;
+  const hasCandidates = !hasOutputs && (candidates.length > 0 || job?.status === "ready");
+  const isComplete = job?.status === "done";
+  const hasHistory = state.historyCount > 0;
+
+  if (els.form) els.form.hidden = hasActiveProject(job);
+  if (els.candidatesPanel) els.candidatesPanel.hidden = !hasCandidates;
+  if (els.outputsPanel) els.outputsPanel.hidden = !hasOutputs;
+  if (els.historyPanel) els.historyPanel.hidden = !(hasHistory || hasOutputs || isComplete);
 }
 
 function setProgress(job) {
-  const progress = Math.max(0, Math.min(100, Number(job?.progress || 0)));
+  syncProjectPanels(job);
+  updateStageProgress(job);
+  const progress = stageProgressPercent(job);
   if (els.progressBar) {
     els.progressBar.style.width = `${progress}%`;
   }
   els.statusPill.textContent = jobStatusLabel(job);
   els.statusMeta.textContent = statusMessage(job);
   if (els.cancelButton) {
-    els.cancelButton.hidden = !["queued", "running", "rendering"].includes(job?.status);
+    els.cancelButton.hidden = !state.renderSelectionLocked && !["queued", "running", "rendering"].includes(job?.status);
     els.cancelButton.disabled = false;
     els.cancelButton.textContent = "Interromper processo";
   }
@@ -168,6 +203,68 @@ function setProgress(job) {
     els.error.hidden = true;
     els.error.textContent = "";
   }
+}
+
+function resetClipperForNewProject(message = "Pronto para criar um novo projeto.") {
+  clearTimeout(state.timer);
+  state.timer = null;
+  state.jobId = null;
+  state.job = null;
+  state.renderSelectionLocked = false;
+  state.actionLocked = false;
+  localStorage.removeItem(PODCAST_LAST_JOB_KEY);
+  renderCandidates(null);
+  renderOutputs(null);
+  syncProjectPanels(null);
+  updateStageProgress(null);
+  if (els.progressBar) els.progressBar.style.width = "0%";
+  if (els.statusPill) els.statusPill.textContent = "Pronto";
+  if (els.statusMeta) els.statusMeta.textContent = message;
+  if (els.cancelButton) els.cancelButton.hidden = true;
+}
+
+function actionLockControls() {
+  const selectors = [
+    ".clipper-outputs-panel button",
+    ".clipper-outputs-panel input",
+    ".clipper-outputs-panel textarea",
+    ".clipper-outputs-panel select",
+    ".clipper-history-panel button",
+  ];
+  return [...document.querySelectorAll(selectors.join(","))];
+}
+
+function actionLockLinks() {
+  return [...document.querySelectorAll(".clipper-outputs-panel a.secondary-button")];
+}
+
+function setActionLocked(locked) {
+  state.actionLocked = locked;
+  for (const control of actionLockControls()) {
+    if (locked) {
+      if (!control.dataset.actionLockDisabled) {
+        control.dataset.actionLockDisabled = control.disabled ? "true" : "false";
+      }
+      control.disabled = true;
+      continue;
+    }
+
+    const wasDisabled = control.dataset.actionLockDisabled === "true";
+    delete control.dataset.actionLockDisabled;
+    control.disabled = wasDisabled;
+  }
+  for (const link of actionLockLinks()) {
+    link.classList.toggle("is-disabled", locked);
+    link.setAttribute("aria-disabled", locked ? "true" : "false");
+    link.tabIndex = locked ? -1 : 0;
+  }
+  if (!locked) {
+    syncYoutubeActionState();
+  }
+}
+
+function syncActionLockControls() {
+  if (state.actionLocked) setActionLocked(true);
 }
 
 function renderCandidates(job) {
@@ -186,13 +283,13 @@ function renderCandidates(job) {
   }
 
   els.candidatesMeta.textContent = `${candidates.length} cortes sugeridos. Selecione os melhores.`;
+  const selectionLocked = isCandidateSelectionLocked(job);
   els.candidates.innerHTML = candidates
     .map((candidate, index) => {
-      const checked = index < Math.min(4, candidates.length) ? "checked" : "";
       const score = candidate?.scores?.overall ?? 0;
       return `
-        <label class="clipper-candidate-card">
-          <input type="checkbox" value="${escapeHtml(candidate.id)}" ${checked} />
+        <label class="clipper-candidate-card${selectionLocked ? " is-disabled" : ""}">
+          <input type="checkbox" value="${escapeHtml(candidate.id)}"${selectionLocked ? " disabled" : ""} />
           <div class="clipper-candidate-body">
             <div class="clipper-candidate-head">
               <strong>${escapeHtml(candidate.title || `Corte ${index + 1}`)}</strong>
@@ -207,7 +304,51 @@ function renderCandidates(job) {
       `;
     })
     .join("");
-  els.renderButton.disabled = job.status !== "ready" && job.status !== "done";
+  syncCandidateSelectionState(job);
+}
+
+function selectedCandidateIds() {
+  return [...els.candidates.querySelectorAll("input[type='checkbox']:checked")]
+    .map((input) => input.value)
+    .filter(Boolean);
+}
+
+function setCandidateSelectionDisabled(disabled) {
+  els.candidates.querySelectorAll("input[type='checkbox']").forEach((input) => {
+    input.disabled = disabled;
+  });
+  els.candidates.querySelectorAll(".clipper-candidate-card").forEach((card) => {
+    card.classList.toggle("is-disabled", disabled);
+  });
+}
+
+function isCandidateSelectionLocked(job = state.job) {
+  if (state.renderSelectionLocked) return true;
+  return ["rendering", "done"].includes(String(job?.status || ""));
+}
+
+function updateRenderSelectionLock(job = state.job) {
+  const status = String(job?.status || "");
+  if (["rendering", "done"].includes(status)) {
+    state.renderSelectionLocked = true;
+    return;
+  }
+  if (["failed", "cancelled"].includes(status)) {
+    state.renderSelectionLocked = false;
+  }
+}
+
+function syncCandidateSelectionState(job = state.job) {
+  const canRender = job?.status === "ready" && !isCandidateSelectionLocked(job);
+  const selectedCount = selectedCandidateIds().length;
+  if (!els.renderButton) return;
+  els.renderButton.disabled = !canRender || selectedCount === 0;
+  if (isCandidateSelectionLocked(job)) {
+    els.renderButton.textContent = "Renderizando...";
+    return;
+  }
+  els.renderButton.textContent =
+    selectedCount > 0 ? `Renderizar ${selectedCount} selecionado(s)` : "Selecione ao menos um corte";
 }
 
 function coverOptionsHtml(output) {
@@ -230,6 +371,7 @@ function coverOptionsHtml(output) {
           class="cover-option-card"
           data-cover-option="${escapeHtml(output.id)}"
           data-cover-url="${escapeHtml(url)}"
+          data-cover-key="${escapeHtml(option.key || option.cover_key || "")}"
           data-cover-label="Opção ${escapeHtml(label)}"
           data-selected="${selected}"
           aria-pressed="${selected}"
@@ -258,24 +400,35 @@ function coverOptionsHtml(output) {
   `;
 }
 
+function outputCoverUrl(output) {
+  const options = Array.isArray(output?.cover_options) ? output.cover_options : [];
+  return (
+    output?.cover_url ||
+    options.find((option) => option?.url || option?.cover_url)?.url ||
+    options.find((option) => option?.url || option?.cover_url)?.cover_url ||
+    ""
+  );
+}
+
 function renderOutputs(job) {
   const outputs = Array.isArray(job?.outputs) ? job.outputs : [];
   if (!outputs.length) {
-    els.outputsMeta.textContent = "Renderize cortes para ver os MP4s finais.";
-    els.outputs.innerHTML = '<div class="empty-state">Nenhum short de podcast renderizado ainda.</div>';
+    els.outputsMeta.textContent = "Renderize cortes para ver seus shorts prontos.";
+    els.outputs.innerHTML = '<div class="empty-state">Nenhum short renderizado ainda.</div>';
     els.youtubeUploadAllButton.disabled = true;
     return;
   }
-  els.outputsMeta.textContent = `${outputs.length} short(s) de podcast renderizados.`;
+  els.outputsMeta.textContent = `${outputs.length} short(s) pronto(s) para revisar.`;
   els.youtubeUploadAllButton.disabled = !state.youtubeAuthorized;
   const candidatesById = new Map((job?.candidates || []).map((candidate) => [candidate.id, candidate]));
   els.outputs.innerHTML = outputs
     .map(
       (output, index) => {
         const candidate = candidatesById.get(output.id) || {};
-        const title = output.title || candidate.title || `Podcast short ${index + 1}`;
+        const title = output.title || candidate.title || `Short ${index + 1}`;
         const description = outputDescription(output, candidate, title);
-        const tags = outputTags(title, description);
+        const tags = outputTagsForDisplay(output, title, description);
+        const coverTitle = output.cover_title || title;
         const camera = output?.visual_focus || {};
         const hasDynamicCamera = Array.isArray(camera.segments) && camera.segments.length > 1;
         const cameraLabel =
@@ -285,13 +438,33 @@ function renderOutputs(job) {
             ? "Zoom/reframe no rosto falante"
             : "Quadro 1:1 centralizado";
         const videoUrl = cacheBustedUrl(output.video_url, output.subtitle_edited_at);
+        const coverUrl = outputCoverUrl(output);
         const burnSubtitles = output.burn_subtitles !== false;
         return `
         <article class="clipper-output-card">
-          <video src="${escapeHtml(videoUrl)}" controls playsinline preload="metadata"></video>
+          <div
+            class="clipper-output-preview"
+            data-output-preview="${escapeHtml(output.id)}"
+            data-video-url="${escapeHtml(videoUrl)}"
+            data-poster-url="${escapeHtml(coverUrl)}"
+          >
+            ${
+              coverUrl
+                ? `<img src="${escapeHtml(coverUrl)}" alt="Miniatura de ${escapeHtml(title)}" loading="lazy" />`
+                : `<div class="clipper-output-placeholder">Prévia do short</div>`
+            }
+            <button
+              type="button"
+              class="clipper-output-play"
+              data-output-play="${escapeHtml(output.id)}"
+              aria-label="Reproduzir ${escapeHtml(title)}"
+            >
+              Reproduzir
+            </button>
+          </div>
           <div class="clipper-output-copy">
             <div class="output-heading">
-              <span>Podcast short ${index + 1}</span>
+              <span>Short ${index + 1}</span>
               <strong>${escapeHtml(title)}</strong>
             </div>
             ${coverOptionsHtml(output)}
@@ -303,6 +476,7 @@ function renderOutputs(job) {
                     id="podcast-youtube-title-${escapeHtml(output.id)}"
                     class="output-edit-input"
                     data-youtube-title="${escapeHtml(output.id)}"
+                    data-previous-title="${escapeHtml(title)}"
                     maxlength="100"
                     value="${escapeHtml(title)}"
                   />
@@ -317,6 +491,20 @@ function renderOutputs(job) {
                     data-youtube-description="${escapeHtml(output.id)}"
                     rows="4"
                   >${escapeHtml(description)}</textarea>
+                </dd>
+              </div>
+              <div>
+                <dt><label for="podcast-cover-title-${escapeHtml(output.id)}">Texto da capa</label></dt>
+                <dd>
+                  <input
+                    id="podcast-cover-title-${escapeHtml(output.id)}"
+                    class="output-edit-input"
+                    data-cover-title="${escapeHtml(output.id)}"
+                    data-manually-edited="${output.cover_title && output.cover_title !== title ? "true" : "false"}"
+                    maxlength="80"
+                    value="${escapeHtml(coverTitle)}"
+                  />
+                  <div class="helper">Texto curto usado nas miniaturas. Salve para gerar novas opções de capa.</div>
                 </dd>
               </div>
               <div>
@@ -340,7 +528,7 @@ function renderOutputs(job) {
               </div>
               <div>
                 <dt>Legenda</dt>
-                <dd>${burnSubtitles ? "Embutida no MP4 + SRT disponível" : "MP4 limpo + SRT separado para YouTube"}</dd>
+                <dd>${burnSubtitles ? "Aplicada ao vídeo + arquivo de legenda disponível" : "Vídeo sem legenda aplicada + arquivo de legenda disponível"}</dd>
               </div>
               <div>
                 <dt>Resumo</dt>
@@ -348,25 +536,24 @@ function renderOutputs(job) {
               </div>
             </dl>
             <div class="subtitle-editor" data-subtitle-panel="${escapeHtml(output.id)}" hidden>
-              <label for="podcast-subtitle-${escapeHtml(output.id)}">Editar legenda SRT</label>
-              <textarea
+              <label for="podcast-subtitle-${escapeHtml(output.id)}">Editar legenda</label>
+              <div
                 id="podcast-subtitle-${escapeHtml(output.id)}"
-                class="output-edit-textarea"
+                class="subtitle-template"
                 data-subtitle-editor="${escapeHtml(output.id)}"
-                rows="9"
-                spellcheck="true"
-              ></textarea>
+              ></div>
               <div class="helper">
-                Ajuste apenas o texto quando possível. Preserve números e timestamps do SRT.
+                Edite apenas o texto. Os tempos ficam bloqueados para evitar que a sincronização seja alterada.
               </div>
             </div>
             <div class="clip-editor" data-edit-panel="${escapeHtml(output.id)}" hidden>
               <div class="clip-editor-preview">
                 <video
-                  src="${escapeHtml(videoUrl)}"
                   controls
                   playsinline
-                  preload="metadata"
+                  preload="none"
+                  poster="${escapeHtml(coverUrl)}"
+                  data-src="${escapeHtml(videoUrl)}"
                   data-edit-preview="${escapeHtml(output.id)}"
                 ></video>
                 <div class="clip-editor-time-panel">
@@ -469,8 +656,16 @@ function renderOutputs(job) {
               </div>
             </div>
             <div class="output-actions">
-              <a class="secondary-button" href="${escapeHtml(output.video_url)}" target="_blank" rel="noreferrer">Abrir MP4</a>
-              <a class="secondary-button" href="${escapeHtml(output.subtitle_url)}" target="_blank" rel="noreferrer">Abrir SRT</a>
+              <button type="button" class="secondary-button" data-metadata-save="${escapeHtml(output.id)}">
+                Salvar textos e atualizar capas
+              </button>
+              <a class="secondary-button" href="${escapeHtml(output.video_url)}" target="_blank" rel="noreferrer">Assistir vídeo</a>
+              <a class="secondary-button" href="${escapeHtml(output.subtitle_url)}" target="_blank" rel="noreferrer">Baixar legenda</a>
+              ${
+                coverUrl
+                  ? `<a class="secondary-button" href="${escapeHtml(coverUrl)}" target="_blank" rel="noreferrer" download="capa-${escapeHtml(output.id)}.jpg">Baixar capa</a>`
+                  : ""
+              }
               <button
                 type="button"
                 class="secondary-button youtube-upload-button"
@@ -485,15 +680,7 @@ function renderOutputs(job) {
               </button>
               <button type="button" class="secondary-button" data-subtitle-toggle="${escapeHtml(output.id)}">Editar legenda</button>
               <button type="button" class="secondary-button" data-subtitle-save="${escapeHtml(output.id)}" hidden>
-                Salvar e atualizar MP4
-              </button>
-              <button
-                type="button"
-                class="secondary-button"
-                data-subtitle-mode="${escapeHtml(output.id)}"
-                data-burn-subtitles="${burnSubtitles ? "false" : "true"}"
-              >
-                ${burnSubtitles ? "Gerar MP4 limpo + SRT" : "Embutir legenda no MP4"}
+                Salvar e atualizar vídeo
               </button>
             </div>
           </div>
@@ -502,6 +689,7 @@ function renderOutputs(job) {
       }
     )
     .join("");
+  syncActionLockControls();
 }
 
 function outputDescription(output, candidate, title) {
@@ -518,7 +706,7 @@ function appendClipOptions(outputs, currentId) {
   return outputs
     .filter((output) => output?.id && output.id !== currentId)
     .map((output, index) => {
-      const title = output.title || `Podcast short ${index + 1}`;
+      const title = output.title || `Short ${index + 1}`;
       const duration = Math.round(output.duration || 0);
       return `<option value="${escapeHtml(output.id)}">${escapeHtml(title)} · ${duration}s</option>`;
     })
@@ -552,7 +740,7 @@ function looksEditorial(value) {
 
 function outputTags(title, description) {
   const text = normalizeTagText(`${title} ${description}`);
-  const tags = ["#Shorts", "#Podcast"];
+  const tags = [];
   const add = (...items) => {
     for (const item of items) {
       if (item && !tags.includes(item)) tags.push(item);
@@ -577,8 +765,19 @@ function outputTags(title, description) {
   if (text.includes("humor") || text.includes("engrac")) add("#Humor");
 
   if (hasAutomotiveContext(text)) add("#Carros", "#Automotivo");
-  if (tags.length < 6) add(...keywordTags(text));
-  return tags.slice(0, 12);
+  add(...keywordTags(text));
+  return tags.filter((tag) => !isGenericHashtag(tag)).slice(0, 12);
+}
+
+function outputTagsForDisplay(output, title, description) {
+  const saved = Array.isArray(output?.youtube_tags) ? output.youtube_tags : [];
+  if (saved.length) {
+    return saved
+      .map((tag) => `#${String(tag || "").trim().replace(/^#/, "")}`)
+      .filter((tag) => tag.length > 1 && !isGenericHashtag(tag))
+      .slice(0, 12);
+  }
+  return outputTags(title, description);
 }
 
 function normalizeTagText(value) {
@@ -609,15 +808,95 @@ function hasAutomotiveContext(text) {
 
 function keywordTags(text) {
   const known = [
-    ["podcast", "#Podcast"],
-    ["youtube", "#YouTube"],
     ["carro", "#Carros"],
     ["historia", "#Historia"],
     ["curiosidade", "#Curiosidades"],
     ["negocio", "#Negocios"],
     ["motivacao", "#Motivacao"],
+    ["ferrari", "#Ferrari"],
+    ["oficina", "#Oficina"],
+    ["mecanica", "#MecanicaAutomotiva"],
+    ["empreend", "#Empreendedorismo"],
+    ["criador", "#CriadoresDeConteudo"],
+    ["conteudo", "#CriacaoDeConteudo"],
+    ["vendas", "#Vendas"],
+    ["marketing", "#MarketingDigital"],
+    ["dinheiro", "#Dinheiro"],
+    ["invest", "#Investimentos"],
+    ["familia", "#Familia"],
+    ["relacionamento", "#Relacionamento"],
+    ["humor", "#Humor"],
+    ["comedia", "#Comedia"],
+    ["cinema", "#Cinema"],
+    ["filme", "#Filmes"],
+    ["musica", "#Musica"],
+    ["futebol", "#Futebol"],
+    ["tecnologia", "#Tecnologia"],
+    ["inteligencia artificial", "#InteligenciaArtificial"],
   ];
-  return known.filter(([term]) => text.includes(term)).map(([, tag]) => tag);
+  const mapped = known.filter(([term]) => text.includes(term)).map(([, tag]) => tag);
+  return [...mapped, ...keywordTagsFromText(text)];
+}
+
+function keywordTagsFromText(text) {
+  const stopwords = new Set([
+    "sobre",
+    "para",
+    "porque",
+    "como",
+    "esse",
+    "essa",
+    "isso",
+    "aquele",
+    "aquela",
+    "muito",
+    "mais",
+    "menos",
+    "quando",
+    "onde",
+    "voce",
+    "eles",
+    "elas",
+    "dele",
+    "dela",
+    "nesse",
+    "nessa",
+    "video",
+    "clip",
+    "clipe",
+    "corte",
+    "momento",
+    "trecho",
+    "fala",
+    "falando",
+    "pessoa",
+    "pessoas",
+  ]);
+  const words = text.match(/[a-z0-9]{4,}/g) || [];
+  const counts = new Map();
+  for (const word of words) {
+    if (stopwords.has(word)) continue;
+    if (/^\d+$/.test(word)) continue;
+    counts.set(word, (counts.get(word) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
+    .slice(0, 6)
+    .map(([word]) => `#${hashtagTitleCase(word)}`);
+}
+
+function hashtagTitleCase(value) {
+  return String(value || "")
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join("");
+}
+
+function isGenericHashtag(tag) {
+  return ["#shorts", "#podcast", "#youtubeshorts", "#youtube"].includes(
+    String(tag || "").toLowerCase()
+  );
 }
 
 function outputYoutubeOverride(outputId) {
@@ -625,14 +904,24 @@ function outputYoutubeOverride(outputId) {
   const description =
     els.outputs.querySelector(`[data-youtube-description="${CSS.escape(outputId)}"]`)?.value?.trim() || "";
   const tagsValue = els.outputs.querySelector(`[data-youtube-tags="${CSS.escape(outputId)}"]`)?.value || "";
-  const coverUrl =
-    els.outputs.querySelector(`[data-cover-option="${CSS.escape(outputId)}"][data-selected="true"]`)?.dataset
-      ?.coverUrl || "";
   return {
     title,
     description,
     tags: parseTags(tagsValue),
-    cover_url: coverUrl,
+  };
+}
+
+function outputMetadataPayload(outputId) {
+  const title = els.outputs.querySelector(`[data-youtube-title="${CSS.escape(outputId)}"]`)?.value?.trim() || "";
+  const description =
+    els.outputs.querySelector(`[data-youtube-description="${CSS.escape(outputId)}"]`)?.value?.trim() || "";
+  const tagsValue = els.outputs.querySelector(`[data-youtube-tags="${CSS.escape(outputId)}"]`)?.value || "";
+  const coverTitle = els.outputs.querySelector(`[data-cover-title="${CSS.escape(outputId)}"]`)?.value?.trim() || title;
+  return {
+    title,
+    description,
+    tags: parseTags(tagsValue),
+    cover_title: coverTitle,
   };
 }
 
@@ -653,22 +942,71 @@ function parseTags(value) {
 }
 
 function youtubeSettingsPayload() {
+  const videoLanguage = els.youtubeVideoLanguage?.value || "pt-BR";
   return {
     privacy_status: els.youtubePrivacy?.value || "private",
-    video_language: els.youtubeVideoLanguage?.value || "pt-BR",
-    audio_language: els.youtubeAudioLanguage?.value || "pt-BR",
+    video_language: videoLanguage,
+    audio_language: videoLanguage,
     caption_language: els.youtubeCaptionLanguage?.value || "pt-BR",
   };
+}
+
+function syncYoutubeActionState() {
+  if (els.youtubeUploadAllButton) {
+    els.youtubeUploadAllButton.disabled = !state.youtubeAuthorized || !(state.job?.outputs || []).length;
+  }
+  els.outputs?.querySelectorAll(".youtube-upload-button").forEach((button) => {
+    const alreadyUploaded = button.dataset.uploaded === "true";
+    button.disabled = alreadyUploaded || !state.youtubeAuthorized;
+  });
+}
+
+function languageOptionHtml(language, selectedCode) {
+  const code = String(language?.code || "").trim();
+  const name = String(language?.name || code).trim();
+  if (!code || !name) return "";
+  const selected = code.toLowerCase() === selectedCode.toLowerCase() ? " selected" : "";
+  return `<option value="${escapeHtml(code)}"${selected}>${escapeHtml(name)} (${escapeHtml(code)})</option>`;
+}
+
+function preferredLanguageCode(languages, selectedCode) {
+  const codes = languages.map((language) => String(language?.code || "")).filter(Boolean);
+  const exact = codes.find((code) => code.toLowerCase() === selectedCode.toLowerCase());
+  if (exact) return exact;
+
+  const baseCode = selectedCode.split("-")[0].toLowerCase();
+  const base = codes.find((code) => code.toLowerCase() === baseCode);
+  if (base) return base;
+
+  return codes.find((code) => code.toLowerCase() === "pt") || codes[0] || selectedCode;
+}
+
+function populateLanguageSelect(select, languages, selectedCode = "pt-BR") {
+  if (!select || !Array.isArray(languages) || !languages.length) return;
+  const effectiveSelectedCode = preferredLanguageCode(languages, selectedCode);
+  select.innerHTML = languages
+    .map((language) => languageOptionHtml(language, effectiveSelectedCode))
+    .filter(Boolean)
+    .join("");
+}
+
+async function loadYoutubeI18nOptions() {
+  if (!els.youtubeVideoLanguage && !els.youtubeCaptionLanguage) return;
+  const payload = await fetch("/api/youtube/i18n-options").then(readJson);
+  const languages = payload?.data?.languages || [];
+  populateLanguageSelect(els.youtubeVideoLanguage, languages, els.youtubeVideoLanguage?.value || "pt-BR");
+  populateLanguageSelect(els.youtubeCaptionLanguage, languages, els.youtubeCaptionLanguage?.value || "pt-BR");
 }
 
 function setYoutubeStatus(configured, authorized, channels = [], channelError = "") {
   state.youtubeConfigured = Boolean(configured);
   state.youtubeAuthorized = Boolean(authorized);
+  const youtubeConnectLabel = els.youtubeConnectButton?.querySelector("span:last-child");
   if (!configured) {
-    els.youtubeStatusMeta.textContent = "Configure YOUTUBE_CLIENT_ID e YOUTUBE_CLIENT_SECRET no backend.";
+    els.youtubeStatusMeta.textContent = "A publicação no YouTube ainda não está disponível nesta conta.";
     els.youtubeConnectButton.disabled = true;
     els.youtubeUploadAllButton.disabled = true;
-    els.youtubeConnectButton.textContent = "YouTube não configurado";
+    if (youtubeConnectLabel) youtubeConnectLabel.textContent = "YouTube indisponível";
     return;
   }
   els.youtubeConnectButton.disabled = false;
@@ -684,13 +1022,19 @@ function setYoutubeStatus(configured, authorized, channels = [], channelError = 
       ? "YouTube conectado. Revise título, descrição e hashtags antes de enviar."
       : "Conecte o canal para habilitar upload dos shorts.";
   }
-  els.youtubeConnectButton.textContent = authorized ? "Reconectar YouTube" : "Conectar YouTube";
+  if (youtubeConnectLabel) {
+    youtubeConnectLabel.textContent = authorized ? "Conectar outra conta" : "Conectar YouTube";
+  }
+  syncActionLockControls();
 }
 
 async function refreshYoutubeStatus() {
   const payload = await fetch("/api/youtube/oauth/status").then(readJson);
   const data = payload?.data || {};
   setYoutubeStatus(data.configured, data.authorized, data.channels || [], data.channel_error || "");
+  if (data.authorized) {
+    loadYoutubeI18nOptions().catch(() => null);
+  }
   renderOutputs(state.job);
 }
 
@@ -698,7 +1042,7 @@ async function connectYoutube() {
   const frontendUrl = `${window.location.origin}${window.location.pathname}`;
   const payload = await fetch(`/api/youtube/oauth/start?frontend_url=${encodeURIComponent(frontendUrl)}`).then(readJson);
   const authorizationUrl = payload?.data?.authorization_url;
-  if (!authorizationUrl) throw new Error("Backend não retornou URL de autorização.");
+  if (!authorizationUrl) throw new Error("Não foi possível iniciar a conexão com o YouTube.");
   window.location.href = authorizationUrl;
 }
 
@@ -710,6 +1054,7 @@ async function cancelCurrentJob() {
     method: "POST",
   }).then(readJson);
   const job = normalizeJob(payload);
+  state.renderSelectionLocked = false;
   state.job = job;
   localStorage.removeItem(PODCAST_LAST_JOB_KEY);
   clearTimeout(state.timer);
@@ -721,8 +1066,11 @@ async function cancelCurrentJob() {
 
 async function uploadOutputToYoutube(outputId, button) {
   if (!state.jobId || !outputId) return;
-  button.disabled = true;
+  if (state.actionLocked) return;
   const originalText = button.textContent;
+  let uploaded = false;
+  setActionLocked(true);
+  button.disabled = true;
   button.textContent = "Enviando...";
   try {
     const payload = await fetch("/api/youtube/upload-podcast", {
@@ -736,7 +1084,10 @@ async function uploadOutputToYoutube(outputId, button) {
       }),
     }).then(readJson);
     const upload = payload?.data?.upload;
+    uploaded = true;
     button.textContent = "Enviado";
+    button.dataset.uploaded = "true";
+    els.outputsMeta.textContent = "Vídeo enviado. A capa e a legenda continuam disponíveis para download.";
     if (upload?.url) {
       button.insertAdjacentHTML(
         "afterend",
@@ -746,15 +1097,25 @@ async function uploadOutputToYoutube(outputId, button) {
   } catch (error) {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
-    button.disabled = false;
-    button.textContent = originalText;
+  } finally {
+    setActionLocked(false);
+    if (uploaded) {
+      button.disabled = true;
+      button.textContent = "Enviado";
+      button.dataset.uploaded = "true";
+    } else {
+      button.disabled = !state.youtubeAuthorized;
+      button.textContent = originalText;
+    }
   }
 }
 
 async function uploadAllOutputsToYoutube() {
   if (!state.jobId || !state.job?.outputs?.length) return;
-  els.youtubeUploadAllButton.disabled = true;
+  if (state.actionLocked) return;
   const originalText = els.youtubeUploadAllButton.textContent;
+  setActionLocked(true);
+  els.youtubeUploadAllButton.disabled = true;
   els.youtubeUploadAllButton.textContent = "Enviando...";
   try {
     const payload = await fetch("/api/youtube/upload-podcast-job", {
@@ -762,39 +1123,22 @@ async function uploadAllOutputsToYoutube() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         job_id: state.jobId,
-        cleanup_after_upload: true,
+        cleanup_after_upload: false,
+        archive_after_upload: true,
         overrides: outputYoutubeOverrides(),
         ...youtubeSettingsPayload(),
       }),
     }).then(readJson);
     const uploads = payload?.data?.uploads || [];
-    state.jobId = null;
-    state.job = null;
-    localStorage.removeItem(PODCAST_LAST_JOB_KEY);
-    els.outputsMeta.textContent = `${uploads.length} short(s) enviados ao YouTube. Projeto local limpo.`;
-    els.outputs.innerHTML = uploads
-      .map(
-        (upload, index) => `
-          <article class="clipper-output-card youtube-clean-result">
-            <div class="clipper-output-copy">
-              <div class="output-heading">
-                <span>Publicado ${index + 1}</span>
-                <strong>${escapeHtml(upload.title || `Podcast short ${index + 1}`)}</strong>
-              </div>
-              <a class="secondary-button" href="${escapeHtml(upload.url)}" target="_blank" rel="noreferrer">Abrir YouTube</a>
-            </div>
-          </article>
-        `,
-      )
-      .join("");
-    renderCandidates(null);
-    setProgress({ status: "done", current_step: "done", progress: 100 });
+    els.outputsMeta.textContent = `${uploads.length} short(s) enviados ao YouTube. Capas e legendas seguem disponíveis para download.`;
+    resetClipperForNewProject("Projeto enviado ao YouTube e movido para o histórico. Você já pode criar um novo projeto.");
+    await loadHistory().catch(() => {});
     setYoutubeStatus(state.youtubeConfigured, state.youtubeAuthorized);
   } catch (error) {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
-    els.youtubeUploadAllButton.disabled = !state.youtubeAuthorized;
   } finally {
+    setActionLocked(false);
     els.youtubeUploadAllButton.textContent = originalText;
   }
 }
@@ -827,6 +1171,75 @@ function formatSeconds(value) {
   return `${Math.max(0, Number(value || 0)).toFixed(3)}s`;
 }
 
+function formatHistoryDate(value) {
+  const numeric = Number(value || 0);
+  const date = numeric > 0 ? new Date(numeric * 1000) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function renderHistory(jobs) {
+  if (!els.history || !els.historyMeta) return;
+  state.historyCount = Array.isArray(jobs) ? jobs.length : 0;
+  syncProjectPanels(state.job);
+  if (!jobs.length) {
+    els.historyMeta.textContent = "Nenhum projeto criado ainda.";
+    els.history.innerHTML = '<div class="empty-state">Seus projetos aparecerão aqui.</div>';
+    return;
+  }
+  els.historyMeta.textContent = `${jobs.length} projeto(s) recentes.`;
+  els.history.innerHTML = jobs
+    .map((job) => {
+      const outputsCount = Number(job.outputs_count || 0);
+      const status = jobStatusLabel(job);
+      return `
+        <article class="history-card ${state.jobId === job.id ? "is-active" : ""}">
+          <div>
+            <strong>${escapeHtml(job.title || "Projeto de clipes")}</strong>
+            <span>${escapeHtml(formatHistoryDate(job.updated_at || job.created_at))}</span>
+          </div>
+          <div class="history-card-meta">
+            <span class="meta-pill">${escapeHtml(status)}</span>
+            <span class="meta-pill">${outputsCount} short(s)</span>
+          </div>
+          <button type="button" class="secondary-button history-open-button" data-history-job="${escapeHtml(job.id)}">
+            Abrir projeto
+          </button>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+async function loadHistory() {
+  if (!els.history || !els.historyMeta) return;
+  const payload = await fetch("/api/podcast/jobs?limit=20").then(readJson);
+  const jobs = payload?.data?.jobs || payload?.jobs || [];
+  renderHistory(jobs);
+}
+
+async function openHistoryJob(jobId) {
+  if (!jobId) return;
+  clearTimeout(state.timer);
+  state.timer = null;
+  state.jobId = jobId;
+  localStorage.setItem(PODCAST_LAST_JOB_KEY, jobId);
+  const payload = await fetch(`/api/podcast/jobs/${encodeURIComponent(jobId)}`).then(readJson);
+  const job = normalizeJob(payload);
+  updateRenderSelectionLock(job);
+  state.job = job;
+  setProgress(job);
+  renderCandidates(job);
+  renderOutputs(job);
+  await loadHistory().catch(() => {});
+  if (!["ready", "done", "failed", "cancelled"].includes(job?.status)) {
+    scheduleRefresh(job);
+  }
+}
+
 async function refreshJob() {
   if (!state.jobId) return;
   let payload;
@@ -840,6 +1253,7 @@ async function refreshJob() {
     throw error;
   }
   const job = normalizeJob(payload);
+  updateRenderSelectionLock(job);
   state.job = job;
   setProgress(job);
   renderCandidates(job);
@@ -847,6 +1261,7 @@ async function refreshJob() {
   if (["ready", "done", "failed", "cancelled"].includes(job?.status)) {
     clearTimeout(state.timer);
     state.timer = null;
+    loadHistory().catch(() => {});
   } else {
     scheduleRefresh(job);
   }
@@ -866,6 +1281,7 @@ async function recoverFromMissingJob() {
   }
   state.jobId = null;
   state.job = null;
+  state.renderSelectionLocked = false;
   renderCandidates(null);
   renderOutputs(null);
   setProgress({ status: "queued", current_step: "queued", progress: 0 });
@@ -873,7 +1289,7 @@ async function recoverFromMissingJob() {
 
 async function restoreLastJob() {
   const queryJobId = new URLSearchParams(window.location.search).get("job");
-  const jobId = queryJobId || localStorage.getItem(PODCAST_LAST_JOB_KEY) || (await latestPodcastJobId());
+  const jobId = queryJobId || localStorage.getItem(PODCAST_LAST_JOB_KEY) || (await latestActivePodcastJobId());
   if (!jobId) return;
   state.jobId = jobId;
   try {
@@ -883,16 +1299,19 @@ async function restoreLastJob() {
       localStorage.removeItem(PODCAST_LAST_JOB_KEY);
       state.jobId = null;
       state.job = null;
+      state.renderSelectionLocked = false;
       renderCandidates(null);
       renderOutputs(null);
       setProgress({ status: "queued", current_step: "queued", progress: 0 });
       return;
     }
     localStorage.setItem(PODCAST_LAST_JOB_KEY, job.id);
+    updateRenderSelectionLock(job);
     state.job = job;
     setProgress(job);
     renderCandidates(job);
     renderOutputs(job);
+    loadHistory().catch(() => {});
     if (!["ready", "done", "failed", "cancelled"].includes(job?.status)) {
       scheduleRefresh(job);
     }
@@ -900,6 +1319,7 @@ async function restoreLastJob() {
     localStorage.removeItem(PODCAST_LAST_JOB_KEY);
     state.jobId = null;
     state.job = null;
+    state.renderSelectionLocked = false;
     renderCandidates(null);
     renderOutputs(null);
   }
@@ -909,6 +1329,17 @@ async function latestPodcastJobId() {
   const payload = await fetch("/api/podcast/jobs?limit=10").then(readJson).catch(() => null);
   const jobs = payload?.data?.jobs || payload?.jobs || [];
   return jobs.find((job) => !isInterruptedJob(job) && job?.status !== "failed")?.id || "";
+}
+
+async function latestActivePodcastJobId() {
+  const payload = await fetch("/api/podcast/jobs?limit=10").then(readJson).catch(() => null);
+  const jobs = payload?.data?.jobs || payload?.jobs || [];
+  return (
+    jobs.find((job) =>
+      !isInterruptedJob(job) &&
+      ["queued", "running", "ready", "rendering"].includes(String(job?.status || ""))
+    )?.id || ""
+  );
 }
 
 function scheduleRefresh(job = state.job) {
@@ -929,6 +1360,42 @@ function replaceOutput(updatedOutput) {
   );
 }
 
+function ensureVideoSource(video) {
+  if (!video) return null;
+  const source = video.dataset.src || video.dataset.videoUrl || "";
+  if (source && video.getAttribute("src") !== source) {
+    video.src = source;
+    video.load();
+  }
+  return video;
+}
+
+function playOutputVideo(outputId) {
+  const preview = els.outputs.querySelector(`[data-output-preview="${CSS.escape(outputId)}"]`);
+  if (!preview) return;
+  const videoUrl = preview.dataset.videoUrl || "";
+  if (!videoUrl) return;
+  const posterUrl = preview.dataset.posterUrl || "";
+  preview.classList.add("is-playing");
+  preview.innerHTML = `
+    <video
+      src="${escapeHtml(videoUrl)}"
+      ${posterUrl ? `poster="${escapeHtml(posterUrl)}"` : ""}
+      controls
+      autoplay
+      playsinline
+      preload="auto"
+      data-output-video="${escapeHtml(outputId)}"
+    ></video>
+  `;
+  preview.querySelector("video")?.play().catch(() => null);
+}
+
+function loadEditPreviewVideo(outputId) {
+  const preview = els.outputs.querySelector(`[data-edit-preview="${CSS.escape(outputId)}"]`);
+  return ensureVideoSource(preview);
+}
+
 function selectCoverOption(outputId, coverUrl) {
   if (!outputId || !coverUrl) return;
   const buttons = els.outputs.querySelectorAll(`[data-cover-option="${CSS.escape(outputId)}"]`);
@@ -941,6 +1408,14 @@ function selectCoverOption(outputId, coverUrl) {
       label.textContent = selected ? "Selecionada" : button.dataset.coverLabel || "Opção";
     }
   }
+  const preview = els.outputs.querySelector(`[data-output-preview="${CSS.escape(outputId)}"]`);
+  if (preview && !preview.querySelector("[data-output-video]")) {
+    preview.dataset.posterUrl = coverUrl;
+    const image = preview.querySelector("img");
+    if (image) {
+      image.src = coverUrl;
+    }
+  }
 }
 
 async function loadSubtitle(outputId) {
@@ -948,6 +1423,77 @@ async function loadSubtitle(outputId) {
     `/api/podcast/jobs/${encodeURIComponent(state.jobId)}/outputs/${encodeURIComponent(outputId)}/subtitle`,
   ).then(readJson);
   return payload?.data?.subtitle || payload?.subtitle || "";
+}
+
+function parseSrtBlocks(subtitle) {
+  return String(subtitle || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim()
+    .split(/\n{2,}/)
+    .map((block, fallbackIndex) => {
+      const lines = block.split("\n");
+      const timeIndex = lines.findIndex((line) => line.includes("-->"));
+      if (timeIndex < 0) return null;
+      const index = timeIndex > 0 ? lines[0].trim() : String(fallbackIndex + 1);
+      const time = lines[timeIndex].trim();
+      const text = lines.slice(timeIndex + 1).join("\n").trim();
+      return { index, time, text };
+    })
+    .filter(Boolean);
+}
+
+function renderSubtitleTemplate(outputId, subtitle) {
+  const editor = els.outputs.querySelector(`[data-subtitle-editor="${CSS.escape(outputId)}"]`);
+  if (!editor) return;
+  const blocks = parseSrtBlocks(subtitle);
+  if (!blocks.length) {
+    editor.innerHTML = '<div class="empty-state">Não foi possível carregar a legenda em blocos editáveis.</div>';
+    editor.dataset.loaded = "false";
+    return;
+  }
+  editor.innerHTML = blocks
+    .map(
+      (block, index) => `
+        <article
+          class="subtitle-template-row"
+          data-subtitle-block="${escapeHtml(outputId)}"
+          data-subtitle-index="${escapeHtml(block.index)}"
+          data-subtitle-time="${escapeHtml(block.time)}"
+        >
+          <div class="subtitle-template-meta">
+            <span>${escapeHtml(block.index || index + 1)}</span>
+            <code>${escapeHtml(block.time)}</code>
+          </div>
+          <textarea
+            class="output-edit-textarea subtitle-template-text"
+            data-subtitle-text="${escapeHtml(outputId)}"
+            rows="2"
+            spellcheck="true"
+          >${escapeHtml(block.text)}</textarea>
+        </article>
+      `,
+    )
+    .join("");
+  editor.dataset.loaded = "true";
+}
+
+function subtitleFromTemplate(outputId) {
+  const rows = [...els.outputs.querySelectorAll(`[data-subtitle-block="${CSS.escape(outputId)}"]`)];
+  if (!rows.length) {
+    throw new Error("Legenda não carregada. Abra o editor novamente.");
+  }
+  return rows
+    .map((row, index) => {
+      const subtitleIndex = row.dataset.subtitleIndex || String(index + 1);
+      const subtitleTime = row.dataset.subtitleTime || "";
+      const text = row.querySelector("[data-subtitle-text]")?.value?.trim() || "";
+      if (!subtitleTime.includes("-->")) {
+        throw new Error("Bloco de legenda inválido. Os timestamps originais não foram encontrados.");
+      }
+      return `${subtitleIndex}\n${subtitleTime}\n${text || " "}`;
+    })
+    .join("\n\n");
 }
 
 async function saveSubtitle(outputId, subtitle) {
@@ -969,6 +1515,18 @@ async function setSubtitleMode(outputId, burnSubtitles) {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ burn_subtitles: burnSubtitles }),
+    },
+  ).then(readJson);
+  return payload?.data?.output || payload?.output || null;
+}
+
+async function saveOutputMetadata(outputId) {
+  const payload = await fetch(
+    `/api/podcast/jobs/${encodeURIComponent(state.jobId)}/outputs/${encodeURIComponent(outputId)}/metadata`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(outputMetadataPayload(outputId)),
     },
   ).then(readJson);
   return payload?.data?.output || payload?.output || null;
@@ -1098,16 +1656,51 @@ function syncPreviewPlayhead(outputId) {
 }
 
 function seekPreview(outputId, time) {
-  const preview = els.outputs.querySelector(`[data-edit-preview="${CSS.escape(outputId)}"]`);
+  const preview = loadEditPreviewVideo(outputId);
   if (!preview) return;
   preview.currentTime = Math.max(0, Math.min(Number(time || 0), clipDuration(outputId)));
   syncPreviewPlayhead(outputId);
 }
 
 els.outputs.addEventListener("click", async (event) => {
+  if (state.actionLocked && event.target.closest("button, a.secondary-button")) {
+    event.preventDefault();
+    return;
+  }
+
+  const playButton = event.target.closest("[data-output-play]");
+  if (playButton) {
+    playOutputVideo(playButton.dataset.outputPlay || "");
+    return;
+  }
+
   const coverOption = event.target.closest("[data-cover-option]");
   if (coverOption) {
     selectCoverOption(coverOption.dataset.coverOption, coverOption.dataset.coverUrl);
+    return;
+  }
+
+  const metadataSave = event.target.closest("[data-metadata-save]");
+  if (metadataSave) {
+    const outputId = String(metadataSave.dataset.metadataSave || "");
+    if (!outputId) return;
+    setActionLocked(true);
+    metadataSave.disabled = true;
+    metadataSave.textContent = "Salvando...";
+    try {
+      const updatedOutput = await saveOutputMetadata(outputId);
+      if (updatedOutput) replaceOutput(updatedOutput);
+      renderOutputs(state.job);
+      loadHistory().catch(() => {});
+      els.outputsMeta.textContent = "Textos salvos e capas atualizadas.";
+    } catch (error) {
+      els.error.hidden = false;
+      els.error.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      setActionLocked(false);
+      metadataSave.disabled = false;
+      metadataSave.textContent = "Salvar textos e atualizar capas";
+    }
     return;
   }
 
@@ -1135,20 +1728,26 @@ els.outputs.addEventListener("click", async (event) => {
       const opening = panel?.hidden;
       if (panel) panel.hidden = !opening;
       if (saveButton) saveButton.hidden = !opening;
-      if (opening) syncClipRangeTimeline(outputId);
+      if (opening) {
+        loadEditPreviewVideo(outputId);
+        syncClipRangeTimeline(outputId);
+      }
       return;
     }
+    setActionLocked(true);
     editSave.disabled = true;
     editSave.textContent = "Exportando...";
     try {
       const output = await exportEditedOutput(outputId);
       appendOutput(output);
       renderOutputs(state.job);
+      loadHistory().catch(() => {});
       els.outputsMeta.textContent = "Versão editada criada. Revise a nova saída antes de enviar.";
     } catch (error) {
       els.error.hidden = false;
       els.error.textContent = error instanceof Error ? error.message : String(error);
     } finally {
+      setActionLocked(false);
       editSave.disabled = false;
       editSave.textContent = "Exportar versão editada";
     }
@@ -1167,42 +1766,47 @@ els.outputs.addEventListener("click", async (event) => {
       "",
   );
   const panel = els.outputs.querySelector(`[data-subtitle-panel="${CSS.escape(outputId)}"]`);
-  const textarea = els.outputs.querySelector(`[data-subtitle-editor="${CSS.escape(outputId)}"]`);
+  const editor = els.outputs.querySelector(`[data-subtitle-editor="${CSS.escape(outputId)}"]`);
   const saveButton = els.outputs.querySelector(`[data-subtitle-save="${CSS.escape(outputId)}"]`);
   if (!outputId) return;
 
   if (mode) {
     const burnSubtitles = mode.dataset.burnSubtitles === "true";
+    setActionLocked(true);
     mode.disabled = true;
-    mode.textContent = burnSubtitles ? "Embutindo..." : "Gerando MP4 limpo...";
+    mode.textContent = burnSubtitles ? "Aplicando legenda..." : "Preparando vídeo...";
     try {
       const updatedOutput = await setSubtitleMode(outputId, burnSubtitles);
       if (updatedOutput) replaceOutput(updatedOutput);
       renderOutputs(state.job);
+      loadHistory().catch(() => {});
     } catch (error) {
       els.error.hidden = false;
       els.error.textContent = error instanceof Error ? error.message : String(error);
     } finally {
+      setActionLocked(false);
       mode.disabled = false;
     }
     return;
   }
 
-  if (!panel || !textarea || !saveButton) return;
+  if (!panel || !editor || !saveButton) return;
 
   if (toggle) {
     const opening = panel.hidden;
     panel.hidden = !opening;
     saveButton.hidden = !opening;
-    if (opening && !textarea.value.trim()) {
+    if (opening && editor.dataset.loaded !== "true") {
+      setActionLocked(true);
       toggle.disabled = true;
       toggle.textContent = "Carregando...";
       try {
-        textarea.value = await loadSubtitle(outputId);
+        renderSubtitleTemplate(outputId, await loadSubtitle(outputId));
       } catch (error) {
         els.error.hidden = false;
         els.error.textContent = error instanceof Error ? error.message : String(error);
       } finally {
+        setActionLocked(false);
         toggle.disabled = false;
         toggle.textContent = "Editar legenda";
       }
@@ -1210,27 +1814,54 @@ els.outputs.addEventListener("click", async (event) => {
     return;
   }
 
+  setActionLocked(true);
   save.disabled = true;
-  save.textContent = "Atualizando MP4...";
+  save.textContent = "Atualizando vídeo...";
   try {
-    const updatedOutput = await saveSubtitle(outputId, textarea.value);
+    const updatedOutput = await saveSubtitle(outputId, subtitleFromTemplate(outputId));
     if (updatedOutput) replaceOutput(updatedOutput);
     renderOutputs(state.job);
+    loadHistory().catch(() => {});
   } catch (error) {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
   } finally {
+    setActionLocked(false);
     save.disabled = false;
-    save.textContent = "Salvar e atualizar MP4";
+    save.textContent = "Salvar e atualizar vídeo";
   }
 });
 
 els.outputs.addEventListener("input", (event) => {
+  const titleInput = event.target.closest("[data-youtube-title]");
+  if (titleInput) {
+    const outputId = titleInput.dataset.youtubeTitle || "";
+    const coverInput = els.outputs.querySelector(`[data-cover-title="${CSS.escape(outputId)}"]`);
+    const previousTitle = titleInput.dataset.previousTitle || "";
+    if (coverInput && coverInput.dataset.manuallyEdited !== "true") {
+      coverInput.value = titleInput.value;
+    } else if (coverInput && coverInput.value.trim() === previousTitle.trim()) {
+      coverInput.value = titleInput.value;
+      coverInput.dataset.manuallyEdited = "false";
+    }
+    titleInput.dataset.previousTitle = titleInput.value;
+  }
+
+  const coverInput = event.target.closest("[data-cover-title]");
+  if (coverInput) {
+    coverInput.dataset.manuallyEdited = "true";
+  }
+
   const startInput = event.target.closest("[data-edit-start]");
   const endInput = event.target.closest("[data-edit-end]");
   const outputId = startInput?.dataset.editStart || endInput?.dataset.editEnd || "";
   if (!outputId) return;
   syncClipRangeTimeline(outputId);
+});
+
+els.candidates.addEventListener("change", (event) => {
+  if (!event.target.closest("input[type='checkbox']")) return;
+  syncCandidateSelectionState(state.job);
 });
 
 els.outputs.addEventListener("pointerdown", (event) => {
@@ -1320,52 +1951,64 @@ els.form.addEventListener("submit", async (event) => {
     const job = normalizeJob(payload);
     state.jobId = job.id;
     state.job = job;
+    state.renderSelectionLocked = false;
     localStorage.setItem(PODCAST_LAST_JOB_KEY, job.id);
     setProgress(job);
     renderCandidates(job);
     renderOutputs(job);
+    loadHistory().catch(() => {});
     scheduleRefresh();
   } catch (error) {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
   } finally {
     els.submit.disabled = false;
-    els.submit.textContent = "Analisar podcast";
+    els.submit.textContent = "Criar projeto";
   }
 });
 
 els.renderButton.addEventListener("click", async () => {
   if (!state.jobId) return;
-  const selectedIds = [...els.candidates.querySelectorAll("input[type='checkbox']:checked")]
-    .map((input) => input.value)
-    .filter(Boolean);
+  const selectedIds = selectedCandidateIds();
   if (!selectedIds.length) {
     els.error.hidden = false;
     els.error.textContent = "Selecione pelo menos um corte.";
+    syncCandidateSelectionState(state.job);
     return;
   }
 
   els.renderButton.disabled = true;
   els.renderButton.textContent = "Renderizando...";
+  state.renderSelectionLocked = true;
+  setCandidateSelectionDisabled(true);
+  setProgress(state.job);
   try {
     const payload = await fetch(`/api/podcast/jobs/${encodeURIComponent(state.jobId)}/render`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         selected_ids: selectedIds,
-        burn_subtitles: els.burnSubtitles.checked,
-        remove_silence: els.removeSilence.checked,
-        artificial_cuts: els.artificialCuts.checked,
+        burn_subtitles: els.burnSubtitles?.checked ?? true,
+        remove_silence: els.removeSilence?.checked ?? true,
+        artificial_cuts: els.artificialCuts?.checked ?? true,
       }),
     }).then(readJson);
     state.job = normalizeJob(payload);
+    updateRenderSelectionLock(state.job);
     setProgress(state.job);
+    renderCandidates(state.job);
+    loadHistory().catch(() => {});
     scheduleRefresh();
   } catch (error) {
+    state.renderSelectionLocked = false;
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
+    setCandidateSelectionDisabled(false);
+    syncCandidateSelectionState(state.job);
   } finally {
-    els.renderButton.textContent = "Renderizar selecionados";
+    if (state.job?.status !== "rendering") {
+      syncCandidateSelectionState(state.job);
+    }
   }
 });
 
@@ -1394,6 +2037,15 @@ els.cancelButton?.addEventListener("click", () => {
   });
 });
 
+els.history?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-history-job]");
+  if (!button) return;
+  openHistoryJob(button.dataset.historyJob).catch((error) => {
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error ? error.message : String(error);
+  });
+});
+
 if (new URLSearchParams(window.location.search).get("youtube") === "connected") {
   history.replaceState(null, "", window.location.pathname);
 }
@@ -1407,4 +2059,9 @@ refreshYoutubeStatus().catch((error) => {
 restoreLastJob().catch((error) => {
   els.error.hidden = false;
   els.error.textContent = error instanceof Error ? error.message : String(error);
+});
+
+loadHistory().catch((error) => {
+  if (!els.historyMeta) return;
+  els.historyMeta.textContent = error instanceof Error ? error.message : "Não foi possível carregar o histórico.";
 });

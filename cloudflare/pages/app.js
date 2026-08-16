@@ -2,7 +2,7 @@ const PIPELINE_FALLBACK = [
   {
     key: "queued",
     label: "Fila recebida",
-    description: "O prompt entrou na fila e a job foi criada no banco.",
+    description: "Recebemos sua solicitação e preparamos a criação.",
   },
   {
     key: "writing_script",
@@ -12,7 +12,7 @@ const PIPELINE_FALLBACK = [
   {
     key: "generating_voice",
     label: "Narração",
-    description: "O texto segue para TTS e vira áudio sincronizável.",
+    description: "O texto vira uma narração pronta para sincronizar.",
   },
   {
     key: "collecting_assets",
@@ -22,16 +22,16 @@ const PIPELINE_FALLBACK = [
   {
     key: "syncing_captions",
     label: "Legendas",
-    description: "Whisper alinha a fala com as legendas.",
+    description: "A fala é alinhada com as legendas.",
   },
   {
     key: "rendering_video",
-    label: "Render",
-    description: "FFmpeg compõe o vídeo final com áudio e texto.",
+    label: "Finalização",
+    description: "O vídeo final é montado com áudio e texto.",
   },
   {
     key: "done",
-    label: "MP4 pronto",
+    label: "Vídeo pronto",
     description: "O resultado final fica salvo e disponível para download.",
   },
 ];
@@ -106,7 +106,7 @@ function formatDateTime(value) {
 function statusLabel(status) {
   const map = {
     queued: "Na fila",
-    running: "Em execução",
+    running: "Criando",
     done: "Concluído",
     failed: "Falhou",
     waiting: "Aguardando",
@@ -119,6 +119,11 @@ function statusClass(status) {
   if (status === "failed") return "status-failed";
   if (status === "running") return "status-running";
   return "status-queued";
+}
+
+function stepLabel(stepKey) {
+  const steps = pickPipeline(state.config);
+  return steps.find((step) => step.key === stepKey)?.label || "Preparando";
 }
 
 function pickPipeline(config) {
@@ -151,12 +156,12 @@ function renderPipeline(job) {
 
 function renderInfra(config) {
   const entries = [
-    ["Supabase", config?.storage?.supabase ? "Conectado" : "Fallback local"],
-    ["Auth", config?.storage?.auth ? "Conectado" : "Chave ausente"],
-    ["R2", config?.storage?.r2 ? "Conectado" : "Pronto para configurar"],
-    ["Backend", config?.storage?.backend ? "Ativo" : "Opcional"],
-    ["Pexels", config?.storage?.pexels ? "Conectado" : "Chave ausente"],
-    ["Modo", config?.mode || "cloud"],
+    ["Conta", config?.storage?.auth ? "Pronta" : "Pendente"],
+    ["Histórico", config?.storage?.supabase ? "Ativo" : "Temporário"],
+    ["Arquivos", config?.storage?.r2 ? "Ativos" : "Pendente"],
+    ["Criação", config?.storage?.backend ? "Ativa" : "Limitada"],
+    ["Biblioteca", config?.storage?.pexels ? "Ativa" : "Pendente"],
+    ["Ambiente", config?.mode === "local" ? "Local" : "Online"],
   ];
   els.infraGrid.innerHTML = entries
     .map(
@@ -168,21 +173,21 @@ function renderInfra(config) {
     )
     .join("");
 
-  const connectedCount = entries.filter(([, value]) => value === "Conectado" || value === "Ativo").length;
+  const connectedCount = entries.filter(([, value]) => value === "Pronta" || value === "Ativo" || value === "Ativa").length;
   const total = entries.length;
   els.infraPill.textContent = `${connectedCount}/${total} prontos`;
 }
 
 function renderJobDetail(job) {
   if (!job) {
-    els.jobMeta.textContent = "Nenhuma execução iniciada ainda.";
+    els.jobMeta.textContent = "Nenhuma criação iniciada ainda.";
     els.jobDetail.className = "job-detail empty";
     els.jobDetail.textContent =
-      "Digite um prompt e envie para criar sua primeira execução.";
+      "Digite um prompt e envie para criar seu primeiro vídeo.";
     return;
   }
 
-  els.jobMeta.textContent = `Job ${job.id} · atualizado em ${formatDateTime(job.updatedAt || job.updated_at)}`;
+  els.jobMeta.textContent = `Atualizado em ${formatDateTime(job.updatedAt || job.updated_at)}`;
   els.jobDetail.className = "job-detail";
   const assetCount = job.assetManifest ? Object.keys(job.assetManifest).length : 0;
   const timelineCount = Array.isArray(job.timeline) ? job.timeline.length : 0;
@@ -198,11 +203,11 @@ function renderJobDetail(job) {
       </div>
       <div>${escapeHtml(scriptPreview)}</div>
       <div class="meta-row">
-        <span class="meta-pill">Etapa: ${escapeHtml(job.current_step || "queued")}</span>
+        <span class="meta-pill">Etapa: ${escapeHtml(stepLabel(job.current_step || "queued"))}</span>
         <span class="meta-pill">Progresso: ${escapeHtml(job.progress ?? 0)}%</span>
-        <span class="meta-pill">Timeline: ${timelineCount}</span>
-        <span class="meta-pill">Assets: ${assetCount}</span>
-        ${videoUrl ? `<span class="meta-pill"><a href="${escapeHtml(videoUrl)}" target="_blank" rel="noreferrer">Abrir MP4</a></span>` : ""}
+        <span class="meta-pill">${timelineCount} item(ns) na timeline</span>
+        <span class="meta-pill">${assetCount} mídia(s)</span>
+        ${videoUrl ? `<span class="meta-pill"><a href="${escapeHtml(videoUrl)}" target="_blank" rel="noreferrer">Assistir vídeo</a></span>` : ""}
       </div>
       ${job.error ? `<p class="status-failed" style="margin:12px 0 0;">${escapeHtml(job.error)}</p>` : ""}
     </div>
@@ -212,7 +217,7 @@ function renderJobDetail(job) {
 
 function renderHistory(jobs) {
   if (!jobs.length) {
-    els.history.innerHTML = '<div class="empty-state">Sem jobs recentes.</div>';
+    els.history.innerHTML = '<div class="empty-state">Sem criações recentes.</div>';
     return;
   }
 
@@ -224,7 +229,7 @@ function renderHistory(jobs) {
           <strong>${escapeHtml(job.prompt)}</strong>
           <span class="${statusClass(job.status)}">${escapeHtml(statusLabel(job.status))}</span>
         </div>
-        <div>${escapeHtml(job.current_step || "queued")} · ${escapeHtml(job.progress ?? 0)}%</div>
+        <div>${escapeHtml(stepLabel(job.current_step || "queued"))} · ${escapeHtml(job.progress ?? 0)}%</div>
         ${job.error ? `<p class="history-error">${escapeHtml(job.error)}</p>` : ""}
         <small>${escapeHtml(formatDateTime(job.createdAt || job.created_at))}</small>
       </article>`
@@ -335,8 +340,7 @@ function renderMediaResults() {
     return;
   }
 
-  const storedCount = state.mediaResults.filter((asset) => asset.persisted).length;
-  els.mediaResultsMeta.textContent = `${state.mediaResults.length} clipes encontrados · ${storedCount} salvos no R2`;
+  els.mediaResultsMeta.textContent = `${state.mediaResults.length} clipe(s) encontrado(s).`;
   els.mediaResults.innerHTML = state.mediaResults
     .map(
       (asset, index) => `
@@ -352,7 +356,7 @@ function renderMediaResults() {
           <div class="media-card-copy">
             <strong>${escapeHtml(asset.title)}</strong>
             <span>${escapeHtml(asset.duration)}s · ${escapeHtml(asset.width)}x${escapeHtml(asset.height)}</span>
-            <span>${asset.persisted ? "Salvo no R2" : "Usando URL externa"}</span>
+            <span>Pronto para usar</span>
             <button type="button" class="secondary-button" data-add-media="${index}">Adicionar à timeline</button>
           </div>
         </article>`
@@ -526,7 +530,7 @@ function syncTimelinePlayer() {
     : "Insira um vídeo na timeline para começar.";
   els.timelinePlayerMeta.textContent = hasVideo
     ? `${sumDuration(clips)}s de vídeo · ${sumDuration(audioClips)}s de áudio`
-    : "O preview usa os clipes da timeline sem renderizar o MP4 final.";
+    : "Veja uma prévia antes da exportação final.";
 
   if (!hasVideo) {
     els.timelineVideo.removeAttribute("src");
@@ -718,7 +722,7 @@ async function submitPrompt(prompt, mode = "ai") {
 
   const button = mode === "full" ? els.fullVideoButton : els.submitButton;
   button.disabled = true;
-  button.textContent = "Criando job...";
+  button.textContent = "Criando...";
   try {
     const payload = await fetchJson("/api/jobs", {
       method: "POST",
@@ -736,13 +740,13 @@ async function submitPrompt(prompt, mode = "ai") {
     els.jobDetail.innerHTML = `
       <div class="job-card">
         <div class="job-card-head">
-          <strong>Falha ao iniciar o job</strong>
+          <strong>Falha ao iniciar a criação</strong>
           <span class="status-failed">Erro</span>
         </div>
         <div>${escapeHtml(error instanceof Error ? error.message : String(error))}</div>
       </div>
     `;
-    els.jobMeta.textContent = "Não foi possível criar a execução.";
+    els.jobMeta.textContent = "Não foi possível criar o vídeo.";
   } finally {
     button.disabled = false;
     button.textContent = mode === "full" ? "Gerar vídeo completo" : "Gerar clipe";
@@ -896,7 +900,7 @@ async function createTtsAudio() {
 
   els.ttsButton.disabled = true;
   els.ttsButton.textContent = "Gerando áudio...";
-  els.audioResultsMeta.textContent = "Gerando narração e salvando no R2.";
+  els.audioResultsMeta.textContent = "Gerando narração.";
   try {
     const payload = await fetchJson("/api/audio/tts", {
       method: "POST",
@@ -937,7 +941,7 @@ async function searchMedia() {
 
   els.mediaSearchButton.disabled = true;
   els.mediaSearchButton.textContent = "Buscando...";
-  els.mediaResultsMeta.textContent = "Buscando no Pexels e salvando clipes no R2 quando possível.";
+  els.mediaResultsMeta.textContent = "Buscando clipes para sua biblioteca.";
   try {
     const payload = await fetchJson("/api/media/search", {
       method: "POST",
@@ -1011,6 +1015,10 @@ function bindEvents() {
 
   document.querySelectorAll(".workspace-tab").forEach((button) => {
     button.addEventListener("click", () => setActiveTab(button.getAttribute("data-tab")));
+  });
+
+  document.querySelectorAll("[data-mode-tab]").forEach((link) => {
+    link.addEventListener("click", () => setActiveTab(link.getAttribute("data-mode-tab")));
   });
 
   els.mediaSearchForm.addEventListener("submit", async (event) => {

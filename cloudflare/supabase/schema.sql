@@ -60,8 +60,53 @@ create index if not exists media_assets_provider_idx
 create index if not exists media_assets_user_id_created_at_idx
   on public.media_assets (user_id, created_at desc);
 
+create table if not exists public.clipper_projects (
+  id text primary key,
+  user_id uuid references auth.users(id) on delete cascade,
+  status text not null default 'queued',
+  current_step text not null default 'queued',
+  progress integer not null default 0,
+  title text not null default 'Projeto de clipes',
+  source_url text,
+  original_name text,
+  candidates_count integer not null default 0,
+  outputs_count integer not null default 0,
+  r2_outputs_count integer not null default 0,
+  data jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.clipper_projects
+  add column if not exists user_id uuid references auth.users(id) on delete cascade;
+
+alter table public.clipper_projects
+  add column if not exists source_url text;
+
+alter table public.clipper_projects
+  add column if not exists original_name text;
+
+alter table public.clipper_projects
+  add column if not exists candidates_count integer not null default 0;
+
+alter table public.clipper_projects
+  add column if not exists outputs_count integer not null default 0;
+
+alter table public.clipper_projects
+  add column if not exists r2_outputs_count integer not null default 0;
+
+alter table public.clipper_projects
+  add column if not exists data jsonb not null default '{}'::jsonb;
+
+create index if not exists clipper_projects_user_id_updated_at_idx
+  on public.clipper_projects (user_id, updated_at desc);
+
+create index if not exists clipper_projects_status_idx
+  on public.clipper_projects (status);
+
 alter table public.video_jobs enable row level security;
 alter table public.media_assets enable row level security;
+alter table public.clipper_projects enable row level security;
 
 drop policy if exists "Users can read own video jobs" on public.video_jobs;
 create policy "Users can read own video jobs"
@@ -87,4 +132,20 @@ create policy "Users can read own media assets"
 drop policy if exists "Users can insert own media assets" on public.media_assets;
 create policy "Users can insert own media assets"
   on public.media_assets for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can read own clipper projects" on public.clipper_projects;
+create policy "Users can read own clipper projects"
+  on public.clipper_projects for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert own clipper projects" on public.clipper_projects;
+create policy "Users can insert own clipper projects"
+  on public.clipper_projects for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update own clipper projects" on public.clipper_projects;
+create policy "Users can update own clipper projects"
+  on public.clipper_projects for update
+  using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
