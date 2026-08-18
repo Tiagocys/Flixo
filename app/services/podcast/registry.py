@@ -1,16 +1,25 @@
 import json
 import os
+import shutil
+from pathlib import Path
 from threading import Lock
+from threading import Event
+from threading import Thread
 import time
 from typing import Callable
 
-from app.services import clipper_database
+from loguru import logger
+
+from app.services import clipper_database, r2_storage
 from app.services.clipper.models import ClipperJob, clipper_job_from_dict
 from app.utils import utils
 
 _jobs: dict[str, ClipperJob] = {}
 _lock = Lock()
+_retention_stop = Event()
+_retention_thread: Thread | None = None
 STALE_JOB_MESSAGE = "Processo interrompido antes de concluir. Inicie uma nova analise para este video."
+TERMINAL_STATUSES = {"done", "failed", "cancelled"}
 
 
 def create_job(job_id: str, **kwargs) -> ClipperJob:
@@ -42,6 +51,7 @@ def get_job(job_id: str) -> ClipperJob | None:
 
 
 def list_jobs(limit: int = 10, user_id: str | None = None) -> list[ClipperJob]:
+    purge_expired_jobs()
     with _lock:
         _load_disk_jobs()
         jobs = list(_jobs.values())
@@ -69,6 +79,88 @@ def update_job(job_id: str, updater: Callable[[ClipperJob], None]) -> ClipperJob
 def delete_job(job_id: str) -> None:
     with _lock:
         _jobs.pop(job_id, None)
+    clipper_database.delete_job(job_id)
+
+
+def purge_expired_jobs() -> int:
+    retention_seconds = _history_retention_seconds()
+    if retention_seconds <= 0:
+        return 0
+    cutoff = time.time() - retention_seconds
+    expired: list[ClipperJob] = []
+    with _lock:
+        _load_disk_jobs()
+        for job in list(_jobs.values()):
+            if job.status not in TERMINAL_STATUSES:
+                continue
+            if _job_sort_time(job) <= cutoff:
+                expired.append(job)
+
+    deleted = 0
+    for job in expired:
+        try:
+            _delete_job_assets(job)
+            delete_job(job.id)
+            deleted += 1
+        except Exception:
+            logger.exception(f"failed to purge expired podcast job: {job.id}")
+    return deleted
+
+
+def start_retention_worker() -> None:
+    global _retention_thread
+    if _retention_thread and _retention_thread.is_alive():
+        return
+    _retention_stop.clear()
+
+    def run() -> None:
+        purge_expired_jobs()
+        interval = max(300, int(os.getenv("CLIPPER_HISTORY_CLEANUP_INTERVAL_SECONDS", "3600")))
+        while not _retention_stop.wait(interval):
+            purge_expired_jobs()
+
+    _retention_thread = Thread(target=run, name="clipper-history-retention", daemon=True)
+    _retention_thread.start()
+
+
+def stop_retention_worker() -> None:
+    _retention_stop.set()
+
+
+def _history_retention_seconds() -> int:
+    value = os.getenv("CLIPPER_HISTORY_RETENTION_SECONDS", "172800")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 172800
+
+
+def _delete_job_assets(job: ClipperJob) -> None:
+    for key in _r2_keys_for_job(job):
+        r2_storage.delete_file(key)
+    task_path = Path(utils.task_dir(os.path.join("podcast", job.id))).resolve()
+    tasks_root = Path(utils.task_dir("podcast")).resolve()
+    if task_path.is_dir() and task_path.is_relative_to(tasks_root):
+        shutil.rmtree(task_path, ignore_errors=True)
+
+
+def _r2_keys_for_job(job: ClipperJob) -> set[str]:
+    keys: set[str] = set()
+    for output in job.outputs or []:
+        for field in ("video_key", "r2_video_key", "subtitle_key", "r2_subtitle_key", "cover_key"):
+            _add_r2_key(keys, output.get(field))
+        for option in output.get("cover_options") or []:
+            if not isinstance(option, dict):
+                continue
+            for field in ("key", "cover_key", "frame_key"):
+                _add_r2_key(keys, option.get(field))
+    return keys
+
+
+def _add_r2_key(keys: set[str], value: object) -> None:
+    key = str(value or "").strip().lstrip("/")
+    if key and not key.startswith("http") and ".." not in key:
+        keys.add(key)
 
 
 def set_failed(job_id: str, error: str) -> None:

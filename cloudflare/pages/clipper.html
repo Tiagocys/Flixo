@@ -93,10 +93,6 @@
               <span>5</span>
               <strong>Renderizando</strong>
             </div>
-            <div class="stage-item" data-stage="done">
-              <span>6</span>
-              <strong>Finalizado</strong>
-            </div>
           </div>
           <div id="podcast-error" class="clipper-error" hidden></div>
         </section>
@@ -107,9 +103,15 @@
               <h2>Cortes sugeridos</h2>
               <p id="podcast-candidates-meta">Aguardando transcrição e análise.</p>
             </div>
-            <button type="button" id="podcast-render-button" class="secondary-button" disabled>
-              Renderizar selecionados
-            </button>
+            <div class="candidate-header-actions">
+              <label class="select-all-candidates">
+                <input id="podcast-select-all-candidates" type="checkbox" disabled />
+                <span>Selecionar todos</span>
+              </label>
+              <button type="button" id="podcast-render-button" class="secondary-button" disabled>
+                Renderizar selecionados
+              </button>
+            </div>
           </div>
           <div id="podcast-candidates" class="clipper-candidates">
             <div class="empty-state">Os candidatos aparecerão aqui.</div>
@@ -130,6 +132,9 @@
               </button>
               <button type="button" id="podcast-youtube-upload-all-button" class="secondary-button" disabled>
                 Enviar todos
+              </button>
+              <button type="button" id="podcast-download-thumbnails-button" class="secondary-button" disabled>
+                Baixar miniaturas
               </button>
             </div>
           </div>

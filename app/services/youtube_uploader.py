@@ -204,12 +204,6 @@ def upload_clipper_output(
     video_id = youtube_response.get("id")
     if not video_id:
         raise RuntimeError("YouTube concluiu o upload, mas nao retornou o ID do video.")
-    thumbnail_result, thumbnail_error = _try_upload_thumbnail(
-        access_token,
-        video_id,
-        cover_url or output.get("cover_url"),
-        cover_key or output.get("cover_key"),
-    )
     return {
         "output_id": output_id,
         "video_id": video_id,
@@ -219,9 +213,6 @@ def upload_clipper_output(
         "video_language": video_lang,
         "audio_language": audio_lang,
         "caption_language": caption_lang,
-        "thumbnail_id": thumbnail_result.get("etag") if thumbnail_result else None,
-        "thumbnail_urls": thumbnail_result.get("thumbnails") if thumbnail_result else {},
-        "thumbnail_error": thumbnail_error,
     }
 
 
@@ -298,12 +289,6 @@ def _upload_output(
     video_id = youtube_response.get("id")
     if not video_id:
         raise RuntimeError("YouTube concluiu o upload, mas nao retornou o ID do video.")
-    thumbnail_result, thumbnail_error = _try_upload_thumbnail(
-        access_token,
-        video_id,
-        cover_url or output.get("cover_url"),
-        cover_key or output.get("cover_key"),
-    )
     return {
         "output_id": str(output.get("id") or ""),
         "video_id": video_id,
@@ -313,9 +298,6 @@ def _upload_output(
         "video_language": video_lang,
         "audio_language": audio_lang,
         "caption_language": caption_lang,
-        "thumbnail_id": thumbnail_result.get("etag") if thumbnail_result else None,
-        "thumbnail_urls": thumbnail_result.get("thumbnails") if thumbnail_result else {},
-        "thumbnail_error": thumbnail_error,
     }
 
 
@@ -438,9 +420,6 @@ def _mark_podcast_job_uploaded(job_id: str, uploads: list[dict[str, Any]]) -> No
             output["youtube_uploaded_at"] = int(time.time())
             output["youtube_video_id"] = upload.get("video_id")
             output["youtube_url"] = upload.get("url")
-            output["youtube_thumbnail_id"] = upload.get("thumbnail_id")
-            output["youtube_thumbnail_urls"] = upload.get("thumbnail_urls") or {}
-            output["youtube_thumbnail_error"] = upload.get("thumbnail_error")
             output["history_status"] = "uploaded"
             output["archive_compression_status"] = "queued"
 
@@ -1103,7 +1082,7 @@ def _upload_thumbnail(
         or _download_thumbnail_from_url(cover_url)
     )
     if not thumbnail_path:
-        return None
+        raise RuntimeError("Video enviado, mas a miniatura selecionada nao foi encontrada para envio.")
     temporary = Path(tempfile.gettempdir()).resolve() in thumbnail_path.resolve().parents
     try:
         mime_type = mimetypes.guess_type(thumbnail_path.name)[0] or "image/jpeg"

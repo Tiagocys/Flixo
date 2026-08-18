@@ -25,12 +25,14 @@ const els = {
   error: document.getElementById("podcast-error"),
   candidatesMeta: document.getElementById("podcast-candidates-meta"),
   candidates: document.getElementById("podcast-candidates"),
+  selectAllCandidates: document.getElementById("podcast-select-all-candidates"),
   renderButton: document.getElementById("podcast-render-button"),
   outputsMeta: document.getElementById("podcast-outputs-meta"),
   outputs: document.getElementById("podcast-outputs"),
   youtubeStatusMeta: document.getElementById("podcast-youtube-status-meta"),
   youtubeConnectButton: document.getElementById("podcast-youtube-connect-button"),
   youtubeUploadAllButton: document.getElementById("podcast-youtube-upload-all-button"),
+  downloadThumbnailsButton: document.getElementById("podcast-download-thumbnails-button"),
   youtubePrivacy: document.getElementById("podcast-youtube-privacy"),
   youtubeVideoLanguage: document.getElementById("podcast-youtube-video-language"),
   youtubeCaptionLanguage: document.getElementById("podcast-youtube-caption-language"),
@@ -44,7 +46,7 @@ const els = {
   history: document.getElementById("podcast-history"),
 };
 
-const STAGE_ORDER = ["ingesting", "transcribing", "analyzing", "ready", "rendering", "done"];
+const STAGE_ORDER = ["ingesting", "transcribing", "analyzing", "ready", "rendering"];
 
 const STAGE_MESSAGES = {
   queued: "Projeto recebido. Vamos preparar o vídeo para análise.",
@@ -55,6 +57,20 @@ const STAGE_MESSAGES = {
   rendering: "Renderizando os shorts selecionados com cortes, câmera e legenda.",
   done: "Shorts editáveis prontos.",
 };
+
+const COVER_TEMPLATE_OPTIONS = [
+  ["classic", "Clássico"],
+  ["impact", "Impacto"],
+  ["clean", "Clean"],
+  ["alert", "Alerta"],
+  ["minimal", "Minimalista"],
+];
+
+const COVER_TEXT_POSITION_OPTIONS = [
+  ["top", "Topo"],
+  ["middle", "Meio"],
+  ["bottom", "Embaixo"],
+];
 
 function hasActiveProject(job) {
   if (!job) return false;
@@ -132,7 +148,7 @@ function statusMessage(job) {
 
 function normalizedStage(job) {
   if (!job) return "";
-  if (job.status === "done") return "done";
+  if (job.status === "done") return "rendering";
   if (job.status === "ready") return "ready";
   if (job.status === "rendering") return "rendering";
   const step = String(job.current_step || "").toLowerCase();
@@ -153,6 +169,7 @@ function updateStageProgress(job) {
   if (!els.stageProgress) return;
   const stage = normalizedStage(job);
   const activeIndex = STAGE_ORDER.indexOf(stage);
+  const isComplete = job?.status === "done";
   const fillPercent =
     activeIndex >= 0 && STAGE_ORDER.length > 1
       ? Math.round((activeIndex / (STAGE_ORDER.length - 1)) * 100)
@@ -161,8 +178,8 @@ function updateStageProgress(job) {
   els.stageProgress.style.setProperty("--stage-fill", `${fillPercent}%`);
   els.stageProgress.querySelectorAll("[data-stage]").forEach((item) => {
     const index = STAGE_ORDER.indexOf(item.dataset.stage || "");
-    const isDone = activeIndex >= 0 && index < activeIndex;
-    const isActive = activeIndex >= 0 && index === activeIndex;
+    const isDone = activeIndex >= 0 && (index < activeIndex || (isComplete && index === activeIndex));
+    const isActive = activeIndex >= 0 && !isComplete && index === activeIndex;
     item.classList.toggle("is-done", isDone);
     item.classList.toggle("is-active", isActive);
   });
@@ -192,9 +209,13 @@ function setProgress(job) {
   els.statusPill.textContent = jobStatusLabel(job);
   els.statusMeta.textContent = statusMessage(job);
   if (els.cancelButton) {
-    els.cancelButton.hidden = !state.renderSelectionLocked && !["queued", "running", "rendering"].includes(job?.status);
+    const canCancel = state.renderSelectionLocked || ["queued", "running", "rendering"].includes(job?.status);
+    const canCreateNew = job?.status === "done";
+    els.cancelButton.hidden = !canCancel && !canCreateNew;
     els.cancelButton.disabled = false;
-    els.cancelButton.textContent = "Interromper processo";
+    els.cancelButton.dataset.statusAction = canCreateNew ? "new-project" : "cancel";
+    els.cancelButton.textContent = canCreateNew ? "Criar novo projeto" : "Interromper processo";
+    els.cancelButton.classList.toggle("danger-button", !canCreateNew);
   }
   if (job?.error && !isInterruptedJob(job)) {
     els.error.hidden = false;
@@ -220,7 +241,12 @@ function resetClipperForNewProject(message = "Pronto para criar um novo projeto.
   if (els.progressBar) els.progressBar.style.width = "0%";
   if (els.statusPill) els.statusPill.textContent = "Pronto";
   if (els.statusMeta) els.statusMeta.textContent = message;
-  if (els.cancelButton) els.cancelButton.hidden = true;
+  if (els.cancelButton) {
+    els.cancelButton.hidden = true;
+    els.cancelButton.dataset.statusAction = "cancel";
+    els.cancelButton.classList.add("danger-button");
+    els.cancelButton.textContent = "Interromper processo";
+  }
 }
 
 function actionLockControls() {
@@ -279,6 +305,7 @@ function renderCandidates(job) {
       els.candidates.innerHTML = '<div class="empty-state">Os candidatos aparecerão aqui.</div>';
     }
     els.renderButton.disabled = true;
+    syncSelectAllCandidates(job);
     return;
   }
 
@@ -296,7 +323,6 @@ function renderCandidates(job) {
               <span class="score-pill">${escapeHtml(score)}%</span>
             </div>
             <div class="clipper-time">${formatTime(candidate.start)} → ${formatTime(candidate.end)} · ${Math.round(candidate.duration || 0)}s</div>
-            <p><b>Score narrativo:</b> ${escapeHtml(score)}%. A câmera será decidida apenas na renderização.</p>
             <p><b>Hook:</b> ${escapeHtml(candidate.hook || "Sem hook identificado.")}</p>
             <p>${escapeHtml(candidate.summary || candidate.reason || "")}</p>
           </div>
@@ -317,6 +343,9 @@ function setCandidateSelectionDisabled(disabled) {
   els.candidates.querySelectorAll("input[type='checkbox']").forEach((input) => {
     input.disabled = disabled;
   });
+  if (els.selectAllCandidates) {
+    els.selectAllCandidates.disabled = disabled;
+  }
   els.candidates.querySelectorAll(".clipper-candidate-card").forEach((card) => {
     card.classList.toggle("is-disabled", disabled);
   });
@@ -343,6 +372,7 @@ function syncCandidateSelectionState(job = state.job) {
   const selectedCount = selectedCandidateIds().length;
   if (!els.renderButton) return;
   els.renderButton.disabled = !canRender || selectedCount === 0;
+  syncSelectAllCandidates(job);
   if (isCandidateSelectionLocked(job)) {
     els.renderButton.textContent = "Renderizando...";
     return;
@@ -351,34 +381,86 @@ function syncCandidateSelectionState(job = state.job) {
     selectedCount > 0 ? `Renderizar ${selectedCount} selecionado(s)` : "Selecione ao menos um corte";
 }
 
+function syncSelectAllCandidates(job = state.job) {
+  if (!els.selectAllCandidates) return;
+  const checkboxes = [...els.candidates.querySelectorAll("input[type='checkbox']")];
+  const enabled = job?.status === "ready" && !isCandidateSelectionLocked(job) && checkboxes.length > 0;
+  const selectedCount = checkboxes.filter((input) => input.checked).length;
+  els.selectAllCandidates.disabled = !enabled;
+  els.selectAllCandidates.checked = checkboxes.length > 0 && selectedCount === checkboxes.length;
+  els.selectAllCandidates.indeterminate = selectedCount > 0 && selectedCount < checkboxes.length;
+}
+
+function optionsHtml(options, selectedValue) {
+  return options
+    .map(([value, label]) => {
+      const selected = String(value) === String(selectedValue) ? " selected" : "";
+      return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+}
+
+function coverPreviewText(value) {
+  return String(value || "CAPA DO SHORT").trim().toUpperCase();
+}
+
 function coverOptionsHtml(output) {
   const options = Array.isArray(output?.cover_options) ? output.cover_options : [];
   if (!options.length) {
     return "";
   }
+  const coverTitle = coverPreviewText(output?.cover_title || output?.title);
+  const coverTemplate = output?.cover_template || "impact";
+  const coverTextPosition = output?.cover_text_position || "bottom";
+  const hasFramePreviews = options.some((option) => option?.frame_url || option?.frameUrl || option?.frame);
 
   const cards = options
     .map((option, index) => {
       const label = option.label || String.fromCharCode(65 + index);
-      const url = option.url || option.cover_url || "";
+      const url = cacheBustedUrl(option.url || option.cover_url || "", output?.cover_updated_at || output?.metadata_edited_at);
+      const rawFrameUrl = option.frame_url || option.frameUrl || option.frame || "";
+      const frameUrl = cacheBustedUrl(rawFrameUrl, output?.cover_updated_at || output?.metadata_edited_at);
+      const canPreviewOverlay = Boolean(rawFrameUrl);
       const selected = index === 0 ? "true" : "false";
-      if (!url) {
+      if (!frameUrl && !url) {
         return "";
       }
       return `
-        <button
-          type="button"
+        <div
           class="cover-option-card"
           data-cover-option="${escapeHtml(output.id)}"
           data-cover-url="${escapeHtml(url)}"
+          data-cover-frame-url="${escapeHtml(frameUrl)}"
+          data-cover-has-frame="${canPreviewOverlay ? "true" : "false"}"
           data-cover-key="${escapeHtml(option.key || option.cover_key || "")}"
           data-cover-label="Opção ${escapeHtml(label)}"
           data-selected="${selected}"
+          role="button"
+          tabindex="0"
           aria-pressed="${selected}"
         >
-          <img src="${escapeHtml(url)}" alt="Capa sugerida ${escapeHtml(label)}" loading="lazy" />
-          <span>${index === 0 ? "Selecionada" : `Opção ${escapeHtml(label)}`}</span>
-        </button>
+          <div class="cover-frame-preview">
+            <img src="${escapeHtml(frameUrl || url)}" alt="Frame sugerido ${escapeHtml(label)}" loading="lazy" />
+            ${
+              canPreviewOverlay
+                ? `<div class="cover-frame-text" aria-hidden="true"><strong>${escapeHtml(coverTitle)}</strong></div>`
+                : ""
+            }
+          </div>
+          <div class="cover-option-footer">
+            <span>${index === 0 ? "Selecionada" : `Opção ${escapeHtml(label)}`}</span>
+            <button
+              type="button"
+              class="cover-option-download"
+              data-cover-download-option="${escapeHtml(output.id)}"
+              data-cover-download-url="${escapeHtml(url)}"
+              data-cover-download-label="${escapeHtml(label)}"
+              aria-label="Baixar miniatura ${escapeHtml(label)}"
+            >
+              Baixar
+            </button>
+          </div>
+        </div>
       `;
     })
     .join("");
@@ -388,10 +470,15 @@ function coverOptionsHtml(output) {
   }
 
   return `
-    <section class="cover-options">
+    <section
+      class="cover-options"
+      data-cover-preview-group="${escapeHtml(output.id)}"
+      data-cover-template="${escapeHtml(coverTemplate)}"
+      data-cover-text-position="${escapeHtml(coverTextPosition)}"
+    >
       <div class="cover-options-head">
         <strong>Capas sugeridas</strong>
-        <span>Mesmo título, frames diferentes</span>
+        <span>${hasFramePreviews ? "Preview instantâneo nos frames do vídeo" : "Capa renderizada do histórico"}</span>
       </div>
       <div class="cover-options-grid">
         ${cards}
@@ -400,14 +487,65 @@ function coverOptionsHtml(output) {
   `;
 }
 
+function coverCustomizationHtml(output, coverTemplate, coverTextPosition, hasFramePreviews) {
+  return `
+    <section class="cover-customization-panel">
+      <div class="cover-options-head">
+        <strong>Modelo da capa</strong>
+        <span>${hasFramePreviews ? "Atualização instantânea" : "Salve para gerar frames limpos"}</span>
+      </div>
+      <div class="cover-customization-grid">
+        <div class="field">
+          <label for="podcast-cover-template-${escapeHtml(output.id)}">Estilo</label>
+          <select
+            id="podcast-cover-template-${escapeHtml(output.id)}"
+            class="output-edit-input"
+            data-cover-template="${escapeHtml(output.id)}"
+          >
+            ${optionsHtml(COVER_TEMPLATE_OPTIONS, coverTemplate)}
+          </select>
+        </div>
+        <div class="field">
+          <label for="podcast-cover-position-${escapeHtml(output.id)}">Posição do texto</label>
+          <select
+            id="podcast-cover-position-${escapeHtml(output.id)}"
+            class="output-edit-input"
+            data-cover-text-position="${escapeHtml(output.id)}"
+          >
+            ${optionsHtml(COVER_TEXT_POSITION_OPTIONS, coverTextPosition)}
+          </select>
+        </div>
+      </div>
+      <div class="helper">
+        ${
+          hasFramePreviews
+            ? "Alterar modelo ou posição atualiza as miniaturas automaticamente."
+            : "Ao alterar o modelo, vamos preparar previews dinâmicos para este projeto."
+        }
+      </div>
+    </section>
+  `;
+}
+
 function outputCoverUrl(output) {
   const options = Array.isArray(output?.cover_options) ? output.cover_options : [];
-  return (
+  const url =
     output?.cover_url ||
     options.find((option) => option?.url || option?.cover_url)?.url ||
     options.find((option) => option?.url || option?.cover_url)?.cover_url ||
-    ""
-  );
+    "";
+  return cacheBustedUrl(url, output?.cover_updated_at || output?.metadata_edited_at);
+}
+
+function outputPreviewFrameUrl(output) {
+  const options = Array.isArray(output?.cover_options) ? output.cover_options : [];
+  const frames = options
+    .map((option) => option?.frame_url || option?.frameUrl || option?.frame || "")
+    .filter(Boolean);
+  if (!frames.length) return outputCoverUrl(output);
+  const seed = String(output?.id || output?.title || "0");
+  const index = [...seed].reduce((sum, char) => sum + char.charCodeAt(0), 0) % frames.length;
+  return cacheBustedUrl(frames[index], output?.cover_updated_at || output?.metadata_edited_at);
 }
 
 function renderOutputs(job) {
@@ -416,10 +554,12 @@ function renderOutputs(job) {
     els.outputsMeta.textContent = "Renderize cortes para ver seus shorts prontos.";
     els.outputs.innerHTML = '<div class="empty-state">Nenhum short renderizado ainda.</div>';
     els.youtubeUploadAllButton.disabled = true;
+    if (els.downloadThumbnailsButton) els.downloadThumbnailsButton.disabled = true;
     return;
   }
   els.outputsMeta.textContent = `${outputs.length} short(s) pronto(s) para revisar.`;
   els.youtubeUploadAllButton.disabled = !state.youtubeAuthorized;
+  if (els.downloadThumbnailsButton) els.downloadThumbnailsButton.disabled = false;
   const candidatesById = new Map((job?.candidates || []).map((candidate) => [candidate.id, candidate]));
   els.outputs.innerHTML = outputs
     .map(
@@ -429,6 +569,11 @@ function renderOutputs(job) {
         const description = outputDescription(output, candidate, title);
         const tags = outputTagsForDisplay(output, title, description);
         const coverTitle = output.cover_title || title;
+        const coverTemplate = output.cover_template || "impact";
+        const coverTextPosition = output.cover_text_position || "bottom";
+        const hasFramePreviews = Array.isArray(output.cover_options)
+          ? output.cover_options.some((option) => option?.frame_url || option?.frameUrl || option?.frame)
+          : false;
         const camera = output?.visual_focus || {};
         const hasDynamicCamera = Array.isArray(camera.segments) && camera.segments.length > 1;
         const cameraLabel =
@@ -439,28 +584,42 @@ function renderOutputs(job) {
             : "Quadro 1:1 centralizado";
         const videoUrl = cacheBustedUrl(output.video_url, output.subtitle_edited_at);
         const coverUrl = outputCoverUrl(output);
+        const previewFrameUrl = outputPreviewFrameUrl(output);
         const burnSubtitles = output.burn_subtitles !== false;
         return `
         <article class="clipper-output-card">
-          <div
-            class="clipper-output-preview"
-            data-output-preview="${escapeHtml(output.id)}"
-            data-video-url="${escapeHtml(videoUrl)}"
-            data-poster-url="${escapeHtml(coverUrl)}"
-          >
-            ${
-              coverUrl
-                ? `<img src="${escapeHtml(coverUrl)}" alt="Miniatura de ${escapeHtml(title)}" loading="lazy" />`
-                : `<div class="clipper-output-placeholder">Prévia do short</div>`
-            }
-            <button
-              type="button"
-              class="clipper-output-play"
-              data-output-play="${escapeHtml(output.id)}"
-              aria-label="Reproduzir ${escapeHtml(title)}"
+          <div class="clipper-output-media">
+            <div
+              class="clipper-output-preview"
+              data-output-preview="${escapeHtml(output.id)}"
+              data-video-url="${escapeHtml(videoUrl)}"
+              data-poster-url="${escapeHtml(previewFrameUrl)}"
             >
-              Reproduzir
-            </button>
+              ${
+                previewFrameUrl
+                  ? `<img src="${escapeHtml(previewFrameUrl)}" alt="Frame de ${escapeHtml(title)}" loading="lazy" />`
+                  : `<div class="clipper-output-placeholder">Prévia do short</div>`
+              }
+              <button
+                type="button"
+                class="clipper-output-play"
+                data-output-play="${escapeHtml(output.id)}"
+                aria-label="Reproduzir ${escapeHtml(title)}"
+              ></button>
+            </div>
+            <div class="clipper-output-downloads">
+              <button
+                type="button"
+                class="secondary-button"
+                data-video-download="${escapeHtml(output.id)}"
+                data-video-download-url="${escapeHtml(output.video_url)}"
+              >
+                Baixar vídeo
+              </button>
+              <a class="secondary-button" href="${escapeHtml(output.subtitle_url)}" target="_blank" rel="noreferrer">
+                Baixar legenda
+              </a>
+            </div>
           </div>
           <div class="clipper-output-copy">
             <div class="output-heading">
@@ -468,6 +627,7 @@ function renderOutputs(job) {
               <strong>${escapeHtml(title)}</strong>
             </div>
             ${coverOptionsHtml(output)}
+            ${coverCustomizationHtml(output, coverTemplate, coverTextPosition, hasFramePreviews)}
             <dl class="output-metadata">
               <div>
                 <dt><label for="podcast-youtube-title-${escapeHtml(output.id)}">Título do vídeo</label></dt>
@@ -533,6 +693,14 @@ function renderOutputs(job) {
               <div>
                 <dt>Resumo</dt>
                 <dd>${escapeHtml(output.summary || output.reason || "")}</dd>
+              </div>
+              <div class="output-metadata-save">
+                <dt>Alterações</dt>
+                <dd>
+                  <button type="button" class="secondary-button" data-metadata-save="${escapeHtml(output.id)}">
+                    Salvar textos e atualizar capas
+                  </button>
+                </dd>
               </div>
             </dl>
             <div class="subtitle-editor" data-subtitle-panel="${escapeHtml(output.id)}" hidden>
@@ -646,26 +814,11 @@ function renderOutputs(job) {
                   <span data-range-end-label="${escapeHtml(output.id)}">Fim: ${escapeHtml(formatMilliseconds(output.duration || 0))}</span>
                 </div>
               </div>
-              <div class="quick-edit-actions">
-                <button type="button" class="secondary-button" data-edit-cut-end="${escapeHtml(output.id)}" data-cut-seconds="1">Tirar 1s do final</button>
-                <button type="button" class="secondary-button" data-edit-cut-end="${escapeHtml(output.id)}" data-cut-seconds="2">Tirar 2s do final</button>
-                <button type="button" class="secondary-button" data-edit-cut-end="${escapeHtml(output.id)}" data-cut-seconds="3">Tirar 3s do final</button>
-              </div>
               <div class="helper">
                 A exportação cria uma nova versão e mantém este clipe original intacto.
               </div>
             </div>
             <div class="output-actions">
-              <button type="button" class="secondary-button" data-metadata-save="${escapeHtml(output.id)}">
-                Salvar textos e atualizar capas
-              </button>
-              <a class="secondary-button" href="${escapeHtml(output.video_url)}" target="_blank" rel="noreferrer">Assistir vídeo</a>
-              <a class="secondary-button" href="${escapeHtml(output.subtitle_url)}" target="_blank" rel="noreferrer">Baixar legenda</a>
-              ${
-                coverUrl
-                  ? `<a class="secondary-button" href="${escapeHtml(coverUrl)}" target="_blank" rel="noreferrer" download="capa-${escapeHtml(output.id)}.jpg">Baixar capa</a>`
-                  : ""
-              }
               <button
                 type="button"
                 class="secondary-button youtube-upload-button"
@@ -676,11 +829,7 @@ function renderOutputs(job) {
               </button>
               <button type="button" class="secondary-button" data-edit-toggle="${escapeHtml(output.id)}">Editar corte</button>
               <button type="button" class="secondary-button" data-edit-save="${escapeHtml(output.id)}" hidden>
-                Exportar versão editada
-              </button>
-              <button type="button" class="secondary-button" data-subtitle-toggle="${escapeHtml(output.id)}">Editar legenda</button>
-              <button type="button" class="secondary-button" data-subtitle-save="${escapeHtml(output.id)}" hidden>
-                Salvar e atualizar vídeo
+                Salvar como novo clipe
               </button>
             </div>
           </div>
@@ -917,11 +1066,16 @@ function outputMetadataPayload(outputId) {
     els.outputs.querySelector(`[data-youtube-description="${CSS.escape(outputId)}"]`)?.value?.trim() || "";
   const tagsValue = els.outputs.querySelector(`[data-youtube-tags="${CSS.escape(outputId)}"]`)?.value || "";
   const coverTitle = els.outputs.querySelector(`[data-cover-title="${CSS.escape(outputId)}"]`)?.value?.trim() || title;
+  const coverTemplate = els.outputs.querySelector(`[data-cover-template="${CSS.escape(outputId)}"]`)?.value || "impact";
+  const coverTextPosition =
+    els.outputs.querySelector(`[data-cover-text-position="${CSS.escape(outputId)}"]`)?.value || "bottom";
   return {
     title,
     description,
     tags: parseTags(tagsValue),
     cover_title: coverTitle,
+    cover_template: coverTemplate,
+    cover_text_position: coverTextPosition,
   };
 }
 
@@ -1087,7 +1241,7 @@ async function uploadOutputToYoutube(outputId, button) {
     uploaded = true;
     button.textContent = "Enviado";
     button.dataset.uploaded = "true";
-    els.outputsMeta.textContent = "Vídeo enviado. A capa e a legenda continuam disponíveis para download.";
+    els.outputsMeta.textContent = "Vídeo enviado. Legenda e capas continuam disponíveis para download.";
     if (upload?.url) {
       button.insertAdjacentHTML(
         "afterend",
@@ -1130,7 +1284,7 @@ async function uploadAllOutputsToYoutube() {
       }),
     }).then(readJson);
     const uploads = payload?.data?.uploads || [];
-    els.outputsMeta.textContent = `${uploads.length} short(s) enviados ao YouTube. Capas e legendas seguem disponíveis para download.`;
+    els.outputsMeta.textContent = `${uploads.length} short(s) enviados ao YouTube. Legendas e capas seguem disponíveis para download.`;
     resetClipperForNewProject("Projeto enviado ao YouTube e movido para o histórico. Você já pode criar um novo projeto.");
     await loadHistory().catch(() => {});
     setYoutubeStatus(state.youtubeConfigured, state.youtubeAuthorized);
@@ -1140,6 +1294,150 @@ async function uploadAllOutputsToYoutube() {
   } finally {
     setActionLocked(false);
     els.youtubeUploadAllButton.textContent = originalText;
+  }
+}
+
+async function downloadFile(url, filename) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`download failed: ${response.status}`);
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+    return;
+  } catch {
+    // Cross-origin assets without CORS may block fetch; opening the asset is the safest fallback.
+  }
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function safeDownloadName(value, fallback) {
+  const safe = String(value || fallback || "miniatura")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+  return safe || fallback || "miniatura";
+}
+
+function selectedCoverDownloadUrl(output) {
+  return selectedCoverDownloadAsset(output).url;
+}
+
+function selectedCoverDownloadAsset(outputOrId) {
+  const outputId = typeof outputOrId === "string" ? outputOrId : String(outputOrId?.id || "");
+  const selected = outputId
+    ? els.outputs.querySelector(`[data-cover-option="${CSS.escape(outputId)}"][data-selected="true"]`)
+    : null;
+  const output =
+    typeof outputOrId === "string"
+      ? (state.job?.outputs || []).find((item) => String(item?.id || "") === outputId)
+      : outputOrId;
+  return {
+    url: selected?.dataset.coverUrl || outputCoverUrl(output) || "",
+    key: selected?.dataset.coverKey || output?.cover_key || "",
+  };
+}
+
+async function downloadSelectedThumbnail(outputId) {
+  const output = (state.job?.outputs || []).find((item) => String(item?.id || "") === String(outputId));
+  const asset = selectedCoverDownloadAsset(outputId);
+  if (!asset.url) {
+    els.error.hidden = false;
+    els.error.textContent = "Nenhuma miniatura disponível para download.";
+    return;
+  }
+  const filename = `${safeDownloadName(output?.cover_title || output?.title, outputId)}.jpg`;
+  await downloadFile(asset.url, filename);
+}
+
+async function downloadOutputVideo(outputId, url) {
+  const output = (state.job?.outputs || []).find((item) => String(item?.id || "") === String(outputId));
+  const videoUrl = url || output?.video_url || "";
+  if (!videoUrl) {
+    els.error.hidden = false;
+    els.error.textContent = "Vídeo indisponível para download.";
+    return;
+  }
+  const filename = `${safeDownloadName(output?.title, outputId)}.mp4`;
+  await downloadFile(videoUrl, filename);
+}
+
+async function downloadAllThumbnails() {
+  const outputs = Array.isArray(state.job?.outputs) ? state.job.outputs : [];
+  const downloads = outputs
+    .map((output, index) => {
+      const asset = selectedCoverDownloadAsset(output);
+      return {
+        output_id: output?.id,
+        filename: `${String(index + 1).padStart(2, "0")}-${safeDownloadName(output?.cover_title || output?.title, output?.id)}.jpg`,
+        ...asset,
+      };
+    })
+    .filter((item) => item.url);
+
+  if (!downloads.length) {
+    els.error.hidden = false;
+    els.error.textContent = "Nenhuma miniatura disponível para download.";
+    return;
+  }
+
+  if (!state.jobId) return;
+  const originalText = els.downloadThumbnailsButton?.textContent || "Baixar miniaturas";
+  if (els.downloadThumbnailsButton) {
+    els.downloadThumbnailsButton.disabled = true;
+    els.downloadThumbnailsButton.textContent = "Preparando...";
+  }
+  try {
+    const response = await fetch(`/api/podcast/jobs/${encodeURIComponent(state.jobId)}/covers/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        covers: downloads.map((item) => ({
+          output_id: item.output_id,
+          cover_key: item.key,
+          cover_url: item.url,
+          filename: item.filename,
+        })),
+      }),
+    });
+    if (!response.ok) {
+      let message = "Falha ao baixar miniaturas.";
+      try {
+        const payload = await response.json();
+        message = payload?.message || payload?.error || message;
+      } catch {
+        // Keep generic message when backend returns a non-JSON error.
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    await downloadFile(objectUrl, `miniaturas-${safeDownloadName(state.job?.title || state.jobId, state.jobId)}.zip`);
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+    els.outputsMeta.textContent = `${downloads.length} miniatura(s) baixadas em um arquivo ZIP.`;
+  } catch (error) {
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (els.downloadThumbnailsButton) {
+      els.downloadThumbnailsButton.disabled = false;
+      els.downloadThumbnailsButton.textContent = originalText;
+    }
   }
 }
 
@@ -1183,20 +1481,21 @@ function formatHistoryDate(value) {
 
 function renderHistory(jobs) {
   if (!els.history || !els.historyMeta) return;
-  state.historyCount = Array.isArray(jobs) ? jobs.length : 0;
+  const visibleJobs = Array.isArray(jobs) ? jobs.filter((job) => job?.id !== state.jobId) : [];
+  state.historyCount = visibleJobs.length;
   syncProjectPanels(state.job);
-  if (!jobs.length) {
+  if (!visibleJobs.length) {
     els.historyMeta.textContent = "Nenhum projeto criado ainda.";
     els.history.innerHTML = '<div class="empty-state">Seus projetos aparecerão aqui.</div>';
     return;
   }
-  els.historyMeta.textContent = `${jobs.length} projeto(s) recentes.`;
-  els.history.innerHTML = jobs
+  els.historyMeta.textContent = `${visibleJobs.length} projeto(s) recentes.`;
+  els.history.innerHTML = visibleJobs
     .map((job) => {
       const outputsCount = Number(job.outputs_count || 0);
       const status = jobStatusLabel(job);
       return `
-        <article class="history-card ${state.jobId === job.id ? "is-active" : ""}">
+        <article class="history-card">
           <div>
             <strong>${escapeHtml(job.title || "Projeto de clipes")}</strong>
             <span>${escapeHtml(formatHistoryDate(job.updated_at || job.created_at))}</span>
@@ -1205,9 +1504,7 @@ function renderHistory(jobs) {
             <span class="meta-pill">${escapeHtml(status)}</span>
             <span class="meta-pill">${outputsCount} short(s)</span>
           </div>
-          <button type="button" class="secondary-button history-open-button" data-history-job="${escapeHtml(job.id)}">
-            Abrir projeto
-          </button>
+          <button type="button" class="secondary-button history-open-button" data-history-job="${escapeHtml(job.id)}">Abrir projeto</button>
         </article>
       `;
     })
@@ -1384,7 +1681,7 @@ function playOutputVideo(outputId) {
       controls
       autoplay
       playsinline
-      preload="auto"
+      preload="metadata"
       data-output-video="${escapeHtml(outputId)}"
     ></video>
   `;
@@ -1396,11 +1693,11 @@ function loadEditPreviewVideo(outputId) {
   return ensureVideoSource(preview);
 }
 
-function selectCoverOption(outputId, coverUrl) {
-  if (!outputId || !coverUrl) return;
+function selectCoverOption(outputId, coverUrl, frameUrl = "") {
+  if (!outputId || (!coverUrl && !frameUrl)) return;
   const buttons = els.outputs.querySelectorAll(`[data-cover-option="${CSS.escape(outputId)}"]`);
   for (const button of buttons) {
-    const selected = button.dataset.coverUrl === coverUrl;
+    const selected = button.dataset.coverUrl === coverUrl && button.dataset.coverFrameUrl === frameUrl;
     button.dataset.selected = selected ? "true" : "false";
     button.setAttribute("aria-pressed", selected ? "true" : "false");
     const label = button.querySelector("span");
@@ -1410,10 +1707,60 @@ function selectCoverOption(outputId, coverUrl) {
   }
   const preview = els.outputs.querySelector(`[data-output-preview="${CSS.escape(outputId)}"]`);
   if (preview && !preview.querySelector("[data-output-video]")) {
-    preview.dataset.posterUrl = coverUrl;
+    preview.dataset.posterUrl = frameUrl || coverUrl;
     const image = preview.querySelector("img");
     if (image) {
-      image.src = coverUrl;
+      image.src = frameUrl || coverUrl;
+    }
+  }
+}
+
+function updateCoverPreview(outputId) {
+  if (!outputId) return;
+  const group = els.outputs.querySelector(`[data-cover-preview-group="${CSS.escape(outputId)}"]`);
+  if (!group) return;
+  const title =
+    els.outputs.querySelector(`[data-cover-title="${CSS.escape(outputId)}"]`)?.value?.trim() ||
+    els.outputs.querySelector(`[data-youtube-title="${CSS.escape(outputId)}"]`)?.value?.trim() ||
+    "Capa do short";
+  const template = els.outputs.querySelector(`[data-cover-template="${CSS.escape(outputId)}"]`)?.value || "impact";
+  const position = els.outputs.querySelector(`[data-cover-text-position="${CSS.escape(outputId)}"]`)?.value || "bottom";
+  group.dataset.coverTemplate = template;
+  group.dataset.coverTextPosition = position;
+  group.querySelectorAll(".cover-frame-text strong").forEach((label) => {
+    label.textContent = coverPreviewText(title);
+  });
+}
+
+async function updateCoverPreviewOrHydrate(outputId) {
+  if (!outputId) return;
+  const group = els.outputs.querySelector(`[data-cover-preview-group="${CSS.escape(outputId)}"]`);
+  if (group?.querySelector(".cover-frame-text")) {
+    updateCoverPreview(outputId);
+    return;
+  }
+  if (state.actionLocked) return;
+  const saveButton = els.outputs.querySelector(`[data-metadata-save="${CSS.escape(outputId)}"]`);
+  const originalText = saveButton?.textContent || "Salvar textos e atualizar capas";
+  setActionLocked(true);
+  els.outputsMeta.textContent = "Preparando previews dinâmicos das capas...";
+  if (saveButton) {
+    saveButton.disabled = true;
+    saveButton.textContent = "Gerando previews...";
+  }
+  try {
+    const updatedOutput = await saveOutputMetadata(outputId);
+    if (updatedOutput) replaceOutput(updatedOutput);
+    renderOutputs(state.job);
+    loadHistory().catch(() => {});
+    els.outputsMeta.textContent = "Previews de capa atualizados.";
+  } catch (error) {
+    els.outputsMeta.textContent = "Não foi possível atualizar os previews agora. Salve os textos para tentar novamente.";
+  } finally {
+    setActionLocked(false);
+    if (saveButton && document.contains(saveButton)) {
+      saveButton.disabled = false;
+      saveButton.textContent = originalText;
     }
   }
 }
@@ -1463,7 +1810,8 @@ function renderSubtitleTemplate(outputId, subtitle) {
         >
           <div class="subtitle-template-meta">
             <span>${escapeHtml(block.index || index + 1)}</span>
-            <code>${escapeHtml(block.time)}</code>
+            <code title="Timestamp bloqueado">${escapeHtml(block.time)}</code>
+            <em>tempo bloqueado</em>
           </div>
           <textarea
             class="output-edit-textarea subtitle-template-text"
@@ -1674,9 +2022,49 @@ els.outputs.addEventListener("click", async (event) => {
     return;
   }
 
+  const coverOptionDownload = event.target.closest("[data-cover-download-option]");
+  if (coverOptionDownload) {
+    const outputId = String(coverOptionDownload.dataset.coverDownloadOption || "");
+    const output = (state.job?.outputs || []).find((item) => String(item?.id || "") === outputId);
+    const label = coverOptionDownload.dataset.coverDownloadLabel || "capa";
+    const url = coverOptionDownload.dataset.coverDownloadUrl || "";
+    if (!url) {
+      els.error.hidden = false;
+      els.error.textContent = "Miniatura indisponível para download.";
+      return;
+    }
+    coverOptionDownload.disabled = true;
+    const originalText = coverOptionDownload.textContent;
+    coverOptionDownload.textContent = "Baixando...";
+    try {
+      const filename = `${safeDownloadName(output?.cover_title || output?.title, outputId)}-${safeDownloadName(label, "capa")}.jpg`;
+      await downloadFile(url, filename);
+    } finally {
+      coverOptionDownload.disabled = false;
+      coverOptionDownload.textContent = originalText;
+    }
+    return;
+  }
+
   const coverOption = event.target.closest("[data-cover-option]");
   if (coverOption) {
-    selectCoverOption(coverOption.dataset.coverOption, coverOption.dataset.coverUrl);
+    selectCoverOption(coverOption.dataset.coverOption, coverOption.dataset.coverUrl, coverOption.dataset.coverFrameUrl);
+    return;
+  }
+
+  const videoDownload = event.target.closest("[data-video-download]");
+  if (videoDownload) {
+    const outputId = String(videoDownload.dataset.videoDownload || "");
+    if (!outputId) return;
+    videoDownload.disabled = true;
+    const originalText = videoDownload.textContent;
+    videoDownload.textContent = "Baixando...";
+    try {
+      await downloadOutputVideo(outputId, videoDownload.dataset.videoDownloadUrl || "");
+    } finally {
+      videoDownload.disabled = false;
+      videoDownload.textContent = originalText;
+    }
     return;
   }
 
@@ -1712,22 +2100,18 @@ els.outputs.addEventListener("click", async (event) => {
 
   const editToggle = event.target.closest("[data-edit-toggle]");
   const editSave = event.target.closest("[data-edit-save]");
-  const editCutEnd = event.target.closest("[data-edit-cut-end]");
-  if (editToggle || editSave || editCutEnd) {
+  if (editToggle || editSave) {
     const outputId = String(
-      editToggle?.dataset.editToggle || editSave?.dataset.editSave || editCutEnd?.dataset.editCutEnd || "",
+      editToggle?.dataset.editToggle || editSave?.dataset.editSave || "",
     );
     if (!outputId) return;
     const panel = els.outputs.querySelector(`[data-edit-panel="${CSS.escape(outputId)}"]`);
     const saveButton = els.outputs.querySelector(`[data-edit-save="${CSS.escape(outputId)}"]`);
-    if (editCutEnd) {
-      setTrimEnd(outputId, Number(editCutEnd.dataset.cutSeconds || 0));
-      return;
-    }
     if (editToggle) {
       const opening = panel?.hidden;
       if (panel) panel.hidden = !opening;
       if (saveButton) saveButton.hidden = !opening;
+      editToggle.hidden = Boolean(opening);
       if (opening) {
         loadEditPreviewVideo(outputId);
         syncClipRangeTimeline(outputId);
@@ -1749,7 +2133,7 @@ els.outputs.addEventListener("click", async (event) => {
     } finally {
       setActionLocked(false);
       editSave.disabled = false;
-      editSave.textContent = "Exportar versão editada";
+      editSave.textContent = "Salvar como novo clipe";
     }
     return;
   }
@@ -1845,11 +2229,13 @@ els.outputs.addEventListener("input", (event) => {
       coverInput.dataset.manuallyEdited = "false";
     }
     titleInput.dataset.previousTitle = titleInput.value;
+    updateCoverPreview(outputId);
   }
 
   const coverInput = event.target.closest("[data-cover-title]");
   if (coverInput) {
     coverInput.dataset.manuallyEdited = "true";
+    updateCoverPreview(coverInput.dataset.coverTitle || "");
   }
 
   const startInput = event.target.closest("[data-edit-start]");
@@ -1859,8 +2245,32 @@ els.outputs.addEventListener("input", (event) => {
   syncClipRangeTimeline(outputId);
 });
 
+els.outputs.addEventListener("change", (event) => {
+  const coverTemplate = event.target.closest("[data-cover-template]");
+  const coverPosition = event.target.closest("[data-cover-text-position]");
+  const outputId = coverTemplate?.dataset.coverTemplate || coverPosition?.dataset.coverTextPosition || "";
+  if (!outputId) return;
+  updateCoverPreviewOrHydrate(outputId);
+});
+
+els.outputs.addEventListener("keydown", (event) => {
+  if (!["Enter", " "].includes(event.key)) return;
+  const coverOption = event.target.closest("[data-cover-option]");
+  if (!coverOption || event.target.closest("[data-cover-download-option]")) return;
+  event.preventDefault();
+  selectCoverOption(coverOption.dataset.coverOption, coverOption.dataset.coverUrl, coverOption.dataset.coverFrameUrl);
+});
+
 els.candidates.addEventListener("change", (event) => {
   if (!event.target.closest("input[type='checkbox']")) return;
+  syncCandidateSelectionState(state.job);
+});
+
+els.selectAllCandidates?.addEventListener("change", () => {
+  const checked = Boolean(els.selectAllCandidates?.checked);
+  els.candidates.querySelectorAll("input[type='checkbox']").forEach((input) => {
+    if (!input.disabled) input.checked = checked;
+  });
   syncCandidateSelectionState(state.job);
 });
 
@@ -2026,7 +2436,16 @@ els.youtubeUploadAllButton.addEventListener("click", () => {
   });
 });
 
+els.downloadThumbnailsButton?.addEventListener("click", () => {
+  downloadAllThumbnails();
+});
+
 els.cancelButton?.addEventListener("click", () => {
+  if (els.cancelButton?.dataset.statusAction === "new-project") {
+    resetClipperForNewProject();
+    return;
+  }
+
   cancelCurrentJob().catch((error) => {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);

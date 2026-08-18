@@ -14,6 +14,66 @@ FONT_PATHS = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 )
 
+COVER_TEXT_POSITIONS = {"top", "middle", "bottom"}
+COVER_TEMPLATES = {
+    "classic": {
+        "label": "Clássico",
+        "fill": (255, 255, 255, 255),
+        "stroke_fill": (0, 0, 0, 245),
+        "stroke_width": 6,
+        "accent_fill": (255, 217, 102, 235),
+        "panel_fill": (0, 0, 0, 110),
+        "overlay_fill": (0, 0, 0, 34),
+        "font_scale": 1.0,
+        "max_width": 0.86,
+        "panel_mode": "legacy",
+    },
+    "impact": {
+        "label": "Impacto",
+        "fill": (255, 255, 255, 255),
+        "stroke_fill": (0, 0, 0, 245),
+        "stroke_width": 6,
+        "accent_fill": (255, 217, 102, 235),
+        "panel_fill": (0, 0, 0, 118),
+        "overlay_fill": (0, 0, 0, 34),
+        "font_scale": 1.0,
+        "max_width": 0.86,
+    },
+    "clean": {
+        "label": "Clean",
+        "fill": (255, 255, 255, 255),
+        "stroke_fill": (15, 23, 42, 220),
+        "stroke_width": 4,
+        "accent_fill": None,
+        "panel_fill": (15, 23, 42, 92),
+        "overlay_fill": (0, 0, 0, 18),
+        "font_scale": 0.86,
+        "max_width": 0.82,
+    },
+    "alert": {
+        "label": "Alerta",
+        "fill": (255, 221, 87, 255),
+        "stroke_fill": (6, 10, 20, 255),
+        "stroke_width": 8,
+        "accent_fill": (239, 68, 68, 235),
+        "panel_fill": (0, 0, 0, 128),
+        "overlay_fill": (0, 0, 0, 42),
+        "font_scale": 1.08,
+        "max_width": 0.88,
+    },
+    "minimal": {
+        "label": "Minimalista",
+        "fill": (255, 255, 255, 250),
+        "stroke_fill": (0, 0, 0, 210),
+        "stroke_width": 3,
+        "accent_fill": None,
+        "panel_fill": (0, 0, 0, 72),
+        "overlay_fill": (0, 0, 0, 12),
+        "font_scale": 0.74,
+        "max_width": 0.76,
+    },
+}
+
 
 def generate_covers_for_job(job_id: str, variants: int = 3, frame_ratio: float = 0.35) -> list[Path]:
     job_dir = Path(utils.root_dir()) / "storage" / "tasks" / "podcast" / job_id
@@ -52,6 +112,8 @@ def attach_cover_options(
             continue
 
         title = str(output.get("cover_title") or output.get("title") or f"Podcast short {index}").strip()
+        template = normalize_cover_template(output.get("cover_template"))
+        text_position = normalize_cover_text_position(output.get("cover_text_position"))
         duration = float(output.get("duration") or probe_duration(source_path) or 1)
         cover_options = []
         cover_id = safe_cover_id(output, index)
@@ -62,13 +124,16 @@ def attach_cover_options(
             frame_path = covers_dir / f"cover-{cover_id}-{label}-frame.jpg"
             cover_path = covers_dir / f"cover-{cover_id}-{label}.jpg"
             extract_frame(source_path, timestamp, frame_path)
-            render_cover(frame_path, cover_path, title)
-            frame_path.unlink(missing_ok=True)
+            render_cover(frame_path, cover_path, title, template=template, text_position=text_position)
             cover_options.append(
                 {
                     "label": label.upper(),
                     "frame_ratio": round(ratio, 3),
                     "timestamp": round(timestamp, 3),
+                    "template": template,
+                    "text_position": text_position,
+                    "frame_path": str(frame_path),
+                    "frame_url": task_url(frame_path),
                     "path": str(cover_path),
                     "url": task_url(cover_path),
                 }
@@ -76,6 +141,8 @@ def attach_cover_options(
             generated.append(cover_path)
 
         if cover_options:
+            output["cover_template"] = template
+            output["cover_text_position"] = text_position
             output["cover_options"] = cover_options
             output["cover_path"] = cover_options[0]["path"]
             output["cover_url"] = cover_options[0]["url"]
@@ -133,41 +200,60 @@ def extract_frame(video_path: Path, timestamp: float, output_path: Path) -> None
     run(command, "failed to extract cover frame")
 
 
-def render_cover(frame_path: Path, output_path: Path, title: str) -> None:
+def render_cover(
+    frame_path: Path,
+    output_path: Path,
+    title: str,
+    template: str = "impact",
+    text_position: str = "bottom",
+) -> None:
     image = Image.open(frame_path).convert("RGB")
     image = ImageEnhance.Contrast(image).enhance(1.08)
     image = ImageEnhance.Color(image).enhance(1.08)
+    style = cover_template_style(template)
+    text_position = normalize_cover_text_position(text_position)
 
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     width, height = image.size
 
-    draw.rectangle((0, 0, width, height), fill=(0, 0, 0, 34))
-    draw.rectangle((0, int(height * 0.56), width, height), fill=(0, 0, 0, 110))
+    draw.rectangle((0, 0, width, height), fill=style["overlay_fill"])
 
-    font = cover_font(title)
-    wrapped = wrap_title(title, font, int(width * 0.86))
-    text_box = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=8, stroke_width=5)
+    font = cover_font(title, float(style["font_scale"]))
+    max_width = int(width * float(style["max_width"]))
+    stroke_width = int(style["stroke_width"])
+    wrapped = wrap_title(title, font, max_width, stroke_width=stroke_width)
+    text_box = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=8, stroke_width=stroke_width)
     text_width = text_box[2] - text_box[0]
     text_height = text_box[3] - text_box[1]
     x = int((width - text_width) / 2)
-    y = int(height * 0.66 - text_height / 2)
+    y = text_y_for_position(height, text_height, text_position)
+    if style.get("panel_mode") == "legacy" and text_position == "bottom":
+        y = int(height * 0.66 - text_height / 2)
+        panel_top = int(height * 0.56)
+        panel_bottom = height
+    else:
+        panel_top = max(0, y - 46)
+        panel_bottom = min(height, y + text_height + 54)
+    draw.rectangle((0, panel_top, width, panel_bottom), fill=style["panel_fill"])
 
-    accent_h = 14
-    draw.rounded_rectangle(
-        (int(width * 0.07), y - 34, int(width * 0.93), y - 34 + accent_h),
-        radius=9,
-        fill=(255, 217, 102, 235),
-    )
+    if style["accent_fill"]:
+        accent_h = 14
+        accent_y = max(18, y - 34)
+        draw.rounded_rectangle(
+            (int(width * 0.07), accent_y, int(width * 0.93), accent_y + accent_h),
+            radius=9,
+            fill=style["accent_fill"],
+        )
     draw.multiline_text(
         (x, y),
         wrapped,
         font=font,
-        fill=(255, 255, 255, 255),
+        fill=style["fill"],
         spacing=8,
         align="center",
-        stroke_width=6,
-        stroke_fill=(0, 0, 0, 245),
+        stroke_width=stroke_width,
+        stroke_fill=style["stroke_fill"],
     )
 
     composed = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
@@ -175,7 +261,31 @@ def render_cover(frame_path: Path, output_path: Path, title: str) -> None:
     composed.save(output_path, quality=92, optimize=True)
 
 
-def cover_font(title: str) -> ImageFont.FreeTypeFont:
+def cover_template_style(template: str) -> dict:
+    return COVER_TEMPLATES[normalize_cover_template(template)]
+
+
+def normalize_cover_template(value: object) -> str:
+    key = str(value or "impact").strip().lower()
+    return key if key in COVER_TEMPLATES else "impact"
+
+
+def normalize_cover_text_position(value: object) -> str:
+    key = str(value or "bottom").strip().lower()
+    return key if key in COVER_TEXT_POSITIONS else "bottom"
+
+
+def text_y_for_position(height: int, text_height: int, position: str) -> int:
+    anchors = {
+        "top": 0.18,
+        "middle": 0.5,
+        "bottom": 0.72,
+    }
+    y = int(height * anchors.get(position, 0.72) - text_height / 2)
+    return max(64, min(height - text_height - 84, y))
+
+
+def cover_font(title: str, scale: float = 1.0) -> ImageFont.FreeTypeFont:
     length = len(title)
     if length <= 22:
         size = 112
@@ -183,7 +293,7 @@ def cover_font(title: str) -> ImageFont.FreeTypeFont:
         size = 96
     else:
         size = 78
-    return font_at(size)
+    return font_at(max(46, int(size * scale)))
 
 
 def font_at(size: int) -> ImageFont.FreeTypeFont:
@@ -193,7 +303,7 @@ def font_at(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default(size=size)
 
 
-def wrap_title(title: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
+def wrap_title(title: str, font: ImageFont.FreeTypeFont, max_width: int, stroke_width: int = 6) -> str:
     words = title.upper().split()
     if not words:
         return "PODCAST SHORT"
@@ -202,7 +312,7 @@ def wrap_title(title: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
     probe = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     for word in words:
         candidate = f"{current} {word}".strip()
-        bbox = probe.textbbox((0, 0), candidate, font=font, stroke_width=6)
+        bbox = probe.textbbox((0, 0), candidate, font=font, stroke_width=stroke_width)
         if bbox[2] - bbox[0] <= max_width or not current:
             current = candidate
         else:

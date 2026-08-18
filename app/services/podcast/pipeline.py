@@ -10,7 +10,11 @@ from app.services.clipper.metadata import write_job_metadata
 from app.services.clipper.models import ClipCandidate, ClipperJob, clipper_job_from_dict
 from app.services.clipper.transcriber import transcribe_video
 from app.services.podcast import registry
-from app.services.podcast.covers import attach_cover_options
+from app.services.podcast.covers import (
+    attach_cover_options,
+    normalize_cover_template,
+    normalize_cover_text_position,
+)
 from app.services.podcast.editor import edit_podcast_output
 from app.services.podcast.ingest import job_dir
 from app.services.podcast.renderer import reburn_podcast_subtitles, render_podcast_clip
@@ -317,9 +321,13 @@ def update_output_metadata(
     description: str | None = None,
     tags: list[str] | None = None,
     cover_title: str | None = None,
+    cover_template: str | None = None,
+    cover_text_position: str | None = None,
 ) -> dict:
     output = dict(_find_output(job_id, output_id))
     old_cover_title = str(output.get("cover_title") or output.get("title") or "").strip()
+    old_cover_template = normalize_cover_template(output.get("cover_template"))
+    old_cover_text_position = normalize_cover_text_position(output.get("cover_text_position"))
     if title is not None:
         output["title"] = _clean_text(title, 100)
     if description is not None:
@@ -330,15 +338,25 @@ def update_output_metadata(
         output["cover_title"] = _clean_text(cover_title, 80)
     elif title is not None and not output.get("cover_title"):
         output["cover_title"] = _clean_text(title, 80)
+    if cover_template is not None:
+        output["cover_template"] = normalize_cover_template(cover_template)
+    if cover_text_position is not None:
+        output["cover_text_position"] = normalize_cover_text_position(cover_text_position)
 
     new_cover_title = str(output.get("cover_title") or output.get("title") or "").strip()
+    new_cover_template = normalize_cover_template(output.get("cover_template"))
+    new_cover_text_position = normalize_cover_text_position(output.get("cover_text_position"))
     should_update_covers = new_cover_title and (
-        new_cover_title != old_cover_title or not output.get("cover_options")
+        new_cover_title != old_cover_title
+        or new_cover_template != old_cover_template
+        or new_cover_text_position != old_cover_text_position
+        or not output.get("cover_options")
     )
     if should_update_covers:
         try:
             attach_cover_options(job_dir(job_id), [output], variants=3)
             output = _persist_cover_assets(job_id, output)
+            output["cover_updated_at"] = int(time.time())
         except Exception:
             logger.exception(f"failed to update podcast covers: job={job_id}, output={output_id}")
             raise RuntimeError("Não foi possível atualizar as capas.")
@@ -467,6 +485,15 @@ def _persist_cover_assets(job_id: str, output: dict) -> dict:
                         option_copy["url"] = r2_storage.public_url(key)
                 except Exception:
                     logger.exception(f"failed to persist podcast cover to R2: job={job_id}, output={output_id}")
+            frame_path = Path(str(option_copy.get("frame_path") or ""))
+            if frame_path.is_file():
+                try:
+                    frame_key = f"{base_key}-cover-{index}-frame.jpg"
+                    if r2_storage.upload_file(frame_path, frame_key, "image/jpeg"):
+                        option_copy["frame_key"] = frame_key
+                        option_copy["frame_url"] = r2_storage.public_url(frame_key)
+                except Exception:
+                    logger.exception(f"failed to persist podcast cover frame to R2: job={job_id}, output={output_id}")
             updated_options.append(option_copy)
         updated["cover_options"] = updated_options
         if updated_options:

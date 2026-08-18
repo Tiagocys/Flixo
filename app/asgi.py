@@ -26,9 +26,13 @@ async def application_lifespan(_: FastAPI):
     from app.services import task as task_service
 
     task_service.recover_interrupted_cross_posts()
+    from app.services.podcast import registry as podcast_registry
+
+    podcast_registry.start_retention_worker()
     try:
         yield
     finally:
+        podcast_registry.stop_retention_worker()
         logger.info("shutdown event")
 
 

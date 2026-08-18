@@ -69,6 +69,16 @@ def download_to_file(key: str, path: str | Path) -> bool:
     return True
 
 
+def delete_file(key: str) -> bool:
+    if not configured():
+        return False
+    response = _signed_delete(key)
+    if response.ok or response.status_code == 404:
+        return True
+    logger.warning(f"R2 delete failed: key={key}, status={response.status_code}, body={response.text[:300]}")
+    return False
+
+
 def compress_mp4_for_storage(input_path: str | Path) -> Path:
     return _compress_mp4(
         input_path=input_path,
@@ -270,6 +280,63 @@ def _signed_put(key: str, body: bytes, content_type: str) -> requests.Response:
         headers={
             "Authorization": authorization,
             "Content-Type": content_type,
+            "X-Amz-Content-Sha256": payload_hash,
+            "X-Amz-Date": amz_date,
+        },
+        timeout=120,
+    )
+
+
+def _signed_delete(key: str) -> requests.Response:
+    account_id = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+    bucket = os.environ["R2_BUCKET"]
+    access_key_id = os.environ["R2_BUCKET_ACCESS_KEY_ID"]
+    secret_access_key = os.environ["R2_BUCKET_SECRET_ACCESS_KEY"]
+    host = f"{account_id}.r2.cloudflarestorage.com"
+    canonical_uri = f"/{bucket}/{_encode_key(key)}"
+    now = datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    date_stamp = now.strftime("%Y%m%d")
+    payload_hash = "UNSIGNED-PAYLOAD"
+
+    headers = {
+        "host": host,
+        "x-amz-content-sha256": payload_hash,
+        "x-amz-date": amz_date,
+    }
+    signed_headers = ";".join(sorted(headers))
+    canonical_headers = "".join(f"{name}:{headers[name].strip()}\n" for name in sorted(headers))
+    canonical_request = "\n".join(
+        [
+            "DELETE",
+            canonical_uri,
+            "",
+            canonical_headers,
+            signed_headers,
+            payload_hash,
+        ]
+    )
+    credential_scope = f"{date_stamp}/auto/s3/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            "AWS4-HMAC-SHA256",
+            amz_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ]
+    )
+    signing_key = _signature_key(secret_access_key, date_stamp)
+    signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    authorization = (
+        "AWS4-HMAC-SHA256 "
+        f"Credential={access_key_id}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+
+    return requests.delete(
+        f"https://{host}{canonical_uri}",
+        headers={
+            "Authorization": authorization,
             "X-Amz-Content-Sha256": payload_hash,
             "X-Amz-Date": amz_date,
         },

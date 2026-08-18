@@ -65,6 +65,26 @@ def get_job(job_id: str, user_id: str | None = None) -> ClipperJob | None:
     return job if job.id else None
 
 
+def delete_job(job_id: str) -> None:
+    if not configured():
+        return
+    response = _request(
+        "DELETE",
+        _table_name(),
+        params={"id": f"eq.{job_id}"},
+        headers={"Prefer": "return=minimal"},
+    )
+    if response is None or response.ok:
+        return
+    if _is_missing_table(response):
+        _disable_missing_table()
+        return
+    logger.warning(
+        "failed to delete clipper job from Supabase: "
+        f"job={job_id}, status={response.status_code}, body={response.text[:300]}"
+    )
+
+
 def list_jobs(limit: int = 10, user_id: str | None = None) -> list[ClipperJob]:
     if not configured():
         return []
