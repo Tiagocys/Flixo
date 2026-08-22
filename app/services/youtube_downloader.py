@@ -3,8 +3,15 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+from loguru import logger
+
 from app.utils import utils
-from app.services.ytdlp_runner import ytdlp_command_base, ytdlp_common_args, ytdlp_error_detail
+from app.services.ytdlp_runner import (
+    ytdlp_command_base,
+    ytdlp_common_args,
+    ytdlp_error_detail,
+    ytdlp_public_error_message,
+)
 
 _jobs: dict[str, dict] = {}
 
@@ -82,7 +89,8 @@ def _download_youtube(url: str, output_dir: Path, max_height: int) -> Path:
         last_result = result
     else:
         detail = ytdlp_error_detail(last_result.stderr if last_result else "", last_result.stdout if last_result else "")
-        raise RuntimeError(f"yt-dlp falhou ao baixar o video: {detail}")
+        logger.warning(f"yt-dlp download failed for {url}: {detail}")
+        raise RuntimeError(ytdlp_public_error_message())
 
     candidates = sorted(
         [

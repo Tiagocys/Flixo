@@ -71,6 +71,10 @@ function mediaAssetsTableName(env: WorkerEnv): string {
   return env.MEDIA_ASSETS_TABLE || "media_assets";
 }
 
+function isMissingSupabaseResource(response: Response): boolean {
+  return response.status === 404;
+}
+
 function memoryUpsert(job: JobRow): JobRow {
   memoryStore.set(job.id, job);
   return job;
@@ -123,6 +127,9 @@ export async function listJobs(env: WorkerEnv, limit = 8, userId?: string): Prom
     { method: "GET" }
   );
   if (!response.ok) {
+    if (isMissingSupabaseResource(response)) {
+      return memorySelect(limit, userId);
+    }
     throw new Error(`failed to list jobs: ${response.status}`);
   }
   return (await response.json()) as JobRow[];
@@ -144,6 +151,9 @@ export async function getJob(env: WorkerEnv, id: string, userId?: string): Promi
     { method: "GET" }
   );
   if (!response.ok) {
+    if (isMissingSupabaseResource(response)) {
+      return memoryFind(id, userId);
+    }
     throw new Error(`failed to fetch job: ${response.status}`);
   }
   const rows = (await response.json()) as JobRow[];
@@ -172,6 +182,9 @@ export async function insertJob(
     body: JSON.stringify(row),
   });
   if (!response.ok) {
+    if (isMissingSupabaseResource(response)) {
+      return memoryUpsert(row);
+    }
     throw new Error(`failed to insert job: ${response.status}`);
   }
   const rows = (await response.json()) as JobRow[];
@@ -233,6 +246,9 @@ export async function patchJob(
     }
   );
   if (!response.ok) {
+    if (isMissingSupabaseResource(response)) {
+      return memoryUpsert(nextRow);
+    }
     throw new Error(`failed to patch job: ${response.status}`);
   }
   const rows = (await response.json()) as JobRow[];
@@ -263,6 +279,9 @@ export async function insertMediaAsset(
     body: JSON.stringify(row),
   });
   if (!response.ok) {
+    if (isMissingSupabaseResource(response)) {
+      return mediaMemoryUpsert(row);
+    }
     throw new Error(`failed to insert media asset: ${response.status}`);
   }
   const rows = (await response.json()) as MediaAssetRow[];
@@ -295,6 +314,9 @@ export async function listMediaAssets(
     { method: "GET" }
   );
   if (!response.ok) {
+    if (isMissingSupabaseResource(response)) {
+      return mediaMemorySelect(limit, type, userId);
+    }
     throw new Error(`failed to list media assets: ${response.status}`);
   }
   return (await response.json()) as MediaAssetRow[];

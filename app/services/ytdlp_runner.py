@@ -7,6 +7,12 @@ import sys
 from pathlib import Path
 
 
+YTDLP_MANUAL_UPLOAD_MESSAGE = (
+    "Não foi possível baixar este vídeo do YouTube automaticamente neste momento. "
+    "Use o upload manual do arquivo para continuar."
+)
+
+
 def ytdlp_command_base() -> list[str]:
     if importlib.util.find_spec("yt_dlp"):
         return [sys.executable, "-m", "yt_dlp"]
@@ -132,3 +138,7 @@ def ytdlp_error_detail(stderr: str, stdout: str, limit: int = 900) -> str:
             "ou configure YTDLP_COOKIES_FILE no .env."
         )
     return detail[-limit:]
+
+
+def ytdlp_public_error_message() -> str:
+    return YTDLP_MANUAL_UPLOAD_MESSAGE
