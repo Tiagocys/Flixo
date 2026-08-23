@@ -3,6 +3,7 @@ const state = {
   job: null,
   timer: null,
   historyCount: 0,
+  deletingHistoryJobs: new Set(),
   actionLocked: false,
   renderSelectionLocked: false,
   youtubeAuthorized: false,
@@ -44,6 +45,11 @@ const els = {
   historyPanel: document.querySelector(".clipper-history-panel"),
   historyMeta: document.getElementById("podcast-history-meta"),
   history: document.getElementById("podcast-history"),
+  confirmModal: document.getElementById("clipper-confirm-modal"),
+  confirmTitle: document.getElementById("clipper-confirm-title"),
+  confirmMessage: document.getElementById("clipper-confirm-message"),
+  confirmAccept: document.querySelector("[data-confirm-accept]"),
+  confirmCancelButtons: document.querySelectorAll("[data-confirm-cancel]"),
 };
 
 const STAGE_ORDER = ["ingesting", "transcribing", "analyzing", "ready", "rendering"];
@@ -85,6 +91,48 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function confirmAction({ title, message, confirmLabel = "Confirmar", cancelLabel = "Cancelar" }) {
+  if (!els.confirmModal || !els.confirmTitle || !els.confirmMessage || !els.confirmAccept) {
+    return Promise.resolve(window.confirm(`${title}\n\n${message}`));
+  }
+
+  const previouslyFocused = document.activeElement;
+  els.confirmTitle.textContent = title;
+  els.confirmMessage.textContent = message;
+  els.confirmAccept.textContent = confirmLabel;
+  els.confirmCancelButtons.forEach((button) => {
+    button.textContent = cancelLabel;
+  });
+  els.confirmModal.hidden = false;
+  document.body.classList.add("has-open-modal");
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const cleanup = (result) => {
+      if (settled) return;
+      settled = true;
+      els.confirmModal.hidden = true;
+      document.body.classList.remove("has-open-modal");
+      els.confirmAccept.removeEventListener("click", onAccept);
+      els.confirmCancelButtons.forEach((button) => button.removeEventListener("click", onCancel));
+      document.removeEventListener("keydown", onKeydown);
+      if (previouslyFocused && typeof previouslyFocused.focus === "function") {
+        previouslyFocused.focus();
+      }
+      resolve(result);
+    };
+    const onAccept = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onKeydown = (event) => {
+      if (event.key === "Escape") cleanup(false);
+    };
+    els.confirmAccept.addEventListener("click", onAccept);
+    els.confirmCancelButtons.forEach((button) => button.addEventListener("click", onCancel));
+    document.addEventListener("keydown", onKeydown);
+    window.requestAnimationFrame(() => els.confirmAccept.focus());
+  });
 }
 
 async function readJson(response) {
@@ -190,13 +238,12 @@ function syncProjectPanels(job = state.job) {
   const outputs = Array.isArray(job?.outputs) ? job.outputs : [];
   const hasOutputs = outputs.length > 0;
   const hasCandidates = !hasOutputs && (candidates.length > 0 || job?.status === "ready");
-  const isComplete = job?.status === "done";
   const hasHistory = state.historyCount > 0;
 
   if (els.form) els.form.hidden = hasActiveProject(job);
   if (els.candidatesPanel) els.candidatesPanel.hidden = !hasCandidates;
   if (els.outputsPanel) els.outputsPanel.hidden = !hasOutputs;
-  if (els.historyPanel) els.historyPanel.hidden = !(hasHistory || hasOutputs || isComplete);
+  if (els.historyPanel) els.historyPanel.hidden = !hasHistory;
 }
 
 function setProgress(job) {
@@ -401,7 +448,13 @@ function optionsHtml(options, selectedValue) {
 }
 
 function coverPreviewText(value) {
-  return String(value || "CAPA DO SHORT").trim().toUpperCase();
+  return coverTitleText(value).toUpperCase();
+}
+
+function coverTitleText(value) {
+  return String(value || "CAPA DO SHORT")
+    .replace(/\s*\(editado\)\s*$/gi, "")
+    .trim() || "CAPA DO SHORT";
 }
 
 function coverOptionsHtml(output) {
@@ -568,7 +621,7 @@ function renderOutputs(job) {
         const title = output.title || candidate.title || `Short ${index + 1}`;
         const description = outputDescription(output, candidate, title);
         const tags = outputTagsForDisplay(output, title, description);
-        const coverTitle = output.cover_title || title;
+        const coverTitle = coverTitleText(output.cover_title || title);
         const coverTemplate = output.cover_template || "impact";
         const coverTextPosition = output.cover_text_position || "bottom";
         const hasFramePreviews = Array.isArray(output.cover_options)
@@ -586,6 +639,7 @@ function renderOutputs(job) {
         const coverUrl = outputCoverUrl(output);
         const previewFrameUrl = outputPreviewFrameUrl(output);
         const burnSubtitles = output.burn_subtitles !== false;
+        const canDeleteOutput = Boolean(output.edited_from);
         return `
         <article class="clipper-output-card">
           <div class="clipper-output-media">
@@ -703,17 +757,6 @@ function renderOutputs(job) {
                 </dd>
               </div>
             </dl>
-            <div class="subtitle-editor" data-subtitle-panel="${escapeHtml(output.id)}" hidden>
-              <label for="podcast-subtitle-${escapeHtml(output.id)}">Editar legenda</label>
-              <div
-                id="podcast-subtitle-${escapeHtml(output.id)}"
-                class="subtitle-template"
-                data-subtitle-editor="${escapeHtml(output.id)}"
-              ></div>
-              <div class="helper">
-                Edite apenas o texto. Os tempos ficam bloqueados para evitar que a sincronização seja alterada.
-              </div>
-            </div>
             <div class="clip-editor" data-edit-panel="${escapeHtml(output.id)}" hidden>
               <div class="clip-editor-preview">
                 <video
@@ -814,6 +857,17 @@ function renderOutputs(job) {
                   <span data-range-end-label="${escapeHtml(output.id)}">Fim: ${escapeHtml(formatMilliseconds(output.duration || 0))}</span>
                 </div>
               </div>
+              <div class="subtitle-editor" data-subtitle-panel="${escapeHtml(output.id)}" hidden>
+                <label for="podcast-subtitle-${escapeHtml(output.id)}">Editar legenda</label>
+                <div
+                  id="podcast-subtitle-${escapeHtml(output.id)}"
+                  class="subtitle-template"
+                  data-subtitle-editor="${escapeHtml(output.id)}"
+                ></div>
+                <div class="helper">
+                  Edite apenas o texto. Os tempos ficam bloqueados para evitar que a sincronização seja alterada.
+                </div>
+              </div>
               <div class="helper">
                 A exportação cria uma nova versão e mantém este clipe original intacto.
               </div>
@@ -827,10 +881,29 @@ function renderOutputs(job) {
               >
                 Enviar ao YouTube
               </button>
+              <button type="button" class="secondary-button" data-subtitle-toggle="${escapeHtml(output.id)}" hidden>
+                Editar legenda
+              </button>
+              <button type="button" class="secondary-button" data-subtitle-save="${escapeHtml(output.id)}" hidden>
+                Salvar e atualizar vídeo
+              </button>
+              <button
+                type="button"
+                class="secondary-button"
+                data-subtitle-mode="${escapeHtml(output.id)}"
+                data-burn-subtitles="${burnSubtitles ? "false" : "true"}"
+              >
+                ${burnSubtitles ? "Salvar clipe sem legenda" : "Salvar clipe com legenda"}
+              </button>
               <button type="button" class="secondary-button" data-edit-toggle="${escapeHtml(output.id)}">Editar corte</button>
               <button type="button" class="secondary-button" data-edit-save="${escapeHtml(output.id)}" hidden>
                 Salvar como novo clipe
               </button>
+              ${
+                canDeleteOutput
+                  ? `<button type="button" class="secondary-button danger-button output-delete-button" data-output-delete="${escapeHtml(output.id)}">Excluir clipe</button>`
+                  : ""
+              }
             </div>
           </div>
         </article>
@@ -1469,6 +1542,39 @@ function formatSeconds(value) {
   return `${Math.max(0, Number(value || 0)).toFixed(3)}s`;
 }
 
+function parseSrtTimestamp(value) {
+  const match = String(value || "").trim().match(/^(\d+):(\d{2}):(\d{2})[,.](\d{1,3})$/);
+  if (!match) return NaN;
+  const [, hours, minutes, seconds, milliseconds] = match;
+  return (
+    Number(hours) * 3600000 +
+    Number(minutes) * 60000 +
+    Number(seconds) * 1000 +
+    Number(milliseconds.padEnd(3, "0"))
+  );
+}
+
+function formatSrtTimestamp(milliseconds) {
+  const total = Math.max(0, Math.round(Number(milliseconds || 0)));
+  const hours = Math.floor(total / 3600000);
+  const minutes = Math.floor((total % 3600000) / 60000);
+  const seconds = Math.floor((total % 60000) / 1000);
+  const ms = total % 1000;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
+function parseSrtTimeRange(value) {
+  const [start, end] = String(value || "").split("-->").map((part) => part.trim());
+  return {
+    startMs: parseSrtTimestamp(start),
+    endMs: parseSrtTimestamp(end),
+  };
+}
+
+function formatSubtitleSecondValue(milliseconds) {
+  return (Math.max(0, Number(milliseconds || 0)) / 1000).toFixed(3);
+}
+
 function formatHistoryDate(value) {
   const numeric = Number(value || 0);
   const date = numeric > 0 ? new Date(numeric * 1000) : new Date(value);
@@ -1477,6 +1583,14 @@ function formatHistoryDate(value) {
     dateStyle: "short",
     timeStyle: "short",
   }).format(date);
+}
+
+function canDeleteHistoryJob(job) {
+  const status = String(job?.status || "");
+  const step = String(job?.current_step || "");
+  const activeStatuses = ["queued", "running", "rendering"];
+  const activeSteps = ["queued", "ingesting", "transcribing", "analyzing", "rendering"];
+  return !activeStatuses.includes(status) && !activeSteps.includes(step);
 }
 
 function renderHistory(jobs) {
@@ -1494,17 +1608,21 @@ function renderHistory(jobs) {
     .map((job) => {
       const outputsCount = Number(job.outputs_count || 0);
       const status = jobStatusLabel(job);
+      const canDelete = canDeleteHistoryJob(job);
       return `
         <article class="history-card">
-          <div>
+          <div class="history-card-content">
             <strong>${escapeHtml(job.title || "Projeto de clipes")}</strong>
             <span>${escapeHtml(formatHistoryDate(job.updated_at || job.created_at))}</span>
+            <div class="history-card-meta">
+              <span class="meta-pill">${escapeHtml(status)}</span>
+              <span class="meta-pill">${outputsCount} short(s)</span>
+            </div>
           </div>
-          <div class="history-card-meta">
-            <span class="meta-pill">${escapeHtml(status)}</span>
-            <span class="meta-pill">${outputsCount} short(s)</span>
+          <div class="history-card-actions">
+            <button type="button" class="secondary-button history-open-button" data-history-job="${escapeHtml(job.id)}">Abrir projeto</button>
+            ${canDelete ? `<button type="button" class="history-delete-button" data-history-delete="${escapeHtml(job.id)}">Excluir</button>` : ""}
           </div>
-          <button type="button" class="secondary-button history-open-button" data-history-job="${escapeHtml(job.id)}">Abrir projeto</button>
         </article>
       `;
     })
@@ -1534,6 +1652,46 @@ async function openHistoryJob(jobId) {
   await loadHistory().catch(() => {});
   if (!["ready", "done", "failed", "cancelled"].includes(job?.status)) {
     scheduleRefresh(job);
+  }
+}
+
+async function deleteHistoryJob(jobId, button) {
+  if (!jobId || state.deletingHistoryJobs.has(jobId)) return;
+  const confirmed = await confirmAction({
+    title: "Excluir projeto?",
+    message: "Os clipes, legendas e capas deste projeto serão removidos permanentemente. Esta ação não pode ser desfeita.",
+    confirmLabel: "Excluir projeto",
+  });
+  if (!confirmed) return;
+
+  const card = button?.closest(".history-card");
+  const controls = card ? [...card.querySelectorAll("button")] : [];
+  state.deletingHistoryJobs.add(jobId);
+  controls.forEach((control) => {
+    control.disabled = true;
+  });
+  if (card) card.setAttribute("aria-busy", "true");
+  button.textContent = "Excluindo...";
+  button.classList.add("is-deleting");
+  els.error.hidden = true;
+  els.error.textContent = "";
+
+  try {
+    await fetch(`/api/podcast/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" }).then(readJson);
+    await loadHistory();
+  } catch (error) {
+    controls.forEach((control) => {
+      control.disabled = false;
+    });
+    if (card) card.removeAttribute("aria-busy");
+    button.textContent = "Excluir";
+    button.classList.remove("is-deleting");
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error
+      ? error.message
+      : "Não foi possível excluir o projeto agora. Tente novamente.";
+  } finally {
+    state.deletingHistoryJobs.delete(jobId);
   }
 }
 
@@ -1657,6 +1815,11 @@ function replaceOutput(updatedOutput) {
   );
 }
 
+function removeOutput(outputId) {
+  if (!state.job || !Array.isArray(state.job.outputs)) return;
+  state.job.outputs = state.job.outputs.filter((output) => String(output?.id || "") !== String(outputId || ""));
+}
+
 function ensureVideoSource(video) {
   if (!video) return null;
   const source = video.dataset.src || video.dataset.videoUrl || "";
@@ -1773,21 +1936,44 @@ async function loadSubtitle(outputId) {
 }
 
 function parseSrtBlocks(subtitle) {
-  return String(subtitle || "")
+  const lines = String(subtitle || "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .trim()
-    .split(/\n{2,}/)
-    .map((block, fallbackIndex) => {
-      const lines = block.split("\n");
-      const timeIndex = lines.findIndex((line) => line.includes("-->"));
-      if (timeIndex < 0) return null;
-      const index = timeIndex > 0 ? lines[0].trim() : String(fallbackIndex + 1);
-      const time = lines[timeIndex].trim();
-      const text = lines.slice(timeIndex + 1).join("\n").trim();
-      return { index, time, text };
-    })
-    .filter(Boolean);
+    .split("\n");
+  const blocks = [];
+
+  for (let cursor = 0; cursor < lines.length;) {
+    const timeIndex = lines.findIndex((line, index) => index >= cursor && line.includes("-->"));
+    if (timeIndex < 0) break;
+
+    const nextTimeIndex = lines.findIndex((line, index) => index > timeIndex && line.includes("-->"));
+    const maybeIndex = lines[timeIndex - 1]?.trim() || "";
+    const index = /^\d+$/.test(maybeIndex) ? maybeIndex : String(blocks.length + 1);
+    const textStart = timeIndex + 1;
+    const textEnd = nextTimeIndex > -1 && /^\d+$/.test(lines[nextTimeIndex - 1]?.trim() || "")
+      ? nextTimeIndex - 1
+      : nextTimeIndex;
+    const textLines = lines
+      .slice(textStart, textEnd > -1 ? textEnd : lines.length)
+      .filter((line) => line.trim() !== "");
+
+    const range = parseSrtTimeRange(lines[timeIndex].trim());
+    if (!Number.isFinite(range.startMs) || !Number.isFinite(range.endMs)) {
+      cursor = nextTimeIndex > -1 ? nextTimeIndex : lines.length;
+      continue;
+    }
+
+    blocks.push({
+      index,
+      time: lines[timeIndex].trim(),
+      startMs: range.startMs,
+      endMs: range.endMs,
+      text: textLines.join("\n").trim(),
+    });
+    cursor = nextTimeIndex > -1 ? nextTimeIndex : lines.length;
+  }
+
+  return blocks;
 }
 
 function renderSubtitleTemplate(outputId, subtitle) {
@@ -1801,17 +1987,30 @@ function renderSubtitleTemplate(outputId, subtitle) {
   }
   editor.innerHTML = blocks
     .map(
-      (block, index) => `
+      (block, index) => {
+        const previousEndMs = index > 0 ? blocks[index - 1].endMs : 0;
+        const nextStartMs = blocks[index + 1]?.startMs;
+        return `
         <article
           class="subtitle-template-row"
           data-subtitle-block="${escapeHtml(outputId)}"
           data-subtitle-index="${escapeHtml(block.index)}"
-          data-subtitle-time="${escapeHtml(block.time)}"
+          data-subtitle-original-time="${escapeHtml(block.time)}"
+          data-subtitle-start-ms="${escapeHtml(block.startMs)}"
+          data-subtitle-end-ms="${escapeHtml(block.endMs)}"
+          data-subtitle-min-start-ms="${escapeHtml(previousEndMs)}"
+          data-subtitle-max-end-ms="${Number.isFinite(nextStartMs) ? escapeHtml(nextStartMs) : ""}"
         >
           <div class="subtitle-template-meta">
             <span>${escapeHtml(block.index || index + 1)}</span>
-            <code title="Timestamp bloqueado">${escapeHtml(block.time)}</code>
-            <em>tempo bloqueado</em>
+            <button
+              type="button"
+              class="subtitle-template-time"
+              data-subtitle-time-toggle="${escapeHtml(outputId)}"
+            >
+              ${escapeHtml(block.time)}
+            </button>
+            <div class="subtitle-template-time-editor" data-subtitle-time-editor="${escapeHtml(outputId)}" hidden></div>
           </div>
           <textarea
             class="output-edit-textarea subtitle-template-text"
@@ -1820,28 +2019,180 @@ function renderSubtitleTemplate(outputId, subtitle) {
             spellcheck="true"
           >${escapeHtml(block.text)}</textarea>
         </article>
-      `,
+      `;
+      },
     )
     .join("");
   editor.dataset.loaded = "true";
 }
 
 function subtitleFromTemplate(outputId) {
+  commitOpenSubtitleTimeEdit(outputId);
   const rows = [...els.outputs.querySelectorAll(`[data-subtitle-block="${CSS.escape(outputId)}"]`)];
   if (!rows.length) {
     throw new Error("Legenda não carregada. Abra o editor novamente.");
   }
-  return rows
-    .map((row, index) => {
-      const subtitleIndex = row.dataset.subtitleIndex || String(index + 1);
-      const subtitleTime = row.dataset.subtitleTime || "";
-      const text = row.querySelector("[data-subtitle-text]")?.value?.trim() || "";
-      if (!subtitleTime.includes("-->")) {
-        throw new Error("Bloco de legenda inválido. Os timestamps originais não foram encontrados.");
-      }
-      return `${subtitleIndex}\n${subtitleTime}\n${text || " "}`;
+  const blocks = rows.map((row, index) => {
+    const subtitleIndex = row.dataset.subtitleIndex || String(index + 1);
+    const startMs = Math.round(Number(row.dataset.subtitleStartMs));
+    const endMs = Math.round(Number(row.dataset.subtitleEndMs));
+    const text = row.querySelector("[data-subtitle-text]")?.value?.trim() || "";
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      throw new Error(`Tempo inválido na legenda ${subtitleIndex}.`);
+    }
+    if (endMs <= startMs) {
+      throw new Error(`O fim da legenda ${subtitleIndex} precisa ser maior que o início.`);
+    }
+    return { subtitleIndex, startMs, endMs, text };
+  });
+
+  blocks.forEach((block, index) => {
+    const previous = blocks[index - 1];
+    if (previous && block.startMs < previous.endMs) {
+      throw new Error(`A legenda ${block.subtitleIndex} começa antes da legenda anterior terminar.`);
+    }
+  });
+
+  return blocks
+    .map((block) => {
+      const subtitleTime = `${formatSrtTimestamp(block.startMs)} --> ${formatSrtTimestamp(block.endMs)}`;
+      return `${block.subtitleIndex}\n${subtitleTime}\n${block.text || " "}`;
     })
     .join("\n\n");
+}
+
+function subtitleTimeTextFromRow(row) {
+  const startMs = Math.round(Number(row?.dataset.subtitleStartMs));
+  const endMs = Math.round(Number(row?.dataset.subtitleEndMs));
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return "";
+  return `${formatSrtTimestamp(startMs)} --> ${formatSrtTimestamp(endMs)}`;
+}
+
+function closeSubtitleTimeEditors(outputId, exceptRow = null) {
+  const rows = [...els.outputs.querySelectorAll(`[data-subtitle-block="${CSS.escape(outputId)}"]`)];
+  rows.forEach((row) => {
+    if (exceptRow && row === exceptRow) return;
+    const editor = row.querySelector("[data-subtitle-time-editor]");
+    const toggle = row.querySelector("[data-subtitle-time-toggle]");
+    if (editor) {
+      editor.hidden = true;
+      editor.innerHTML = "";
+    }
+    if (toggle) toggle.hidden = false;
+  });
+}
+
+function subtitleTimeLimits(row) {
+  const minStartMs = Math.max(0, Math.round(Number(row?.dataset.subtitleMinStartMs || 0)));
+  const startMs = Math.max(0, Math.round(Number(row?.dataset.subtitleStartMs || 0)));
+  const endMs = Math.max(0, Math.round(Number(row?.dataset.subtitleEndMs || 0)));
+  const maxEndRaw = row?.dataset.subtitleMaxEndMs;
+  const maxEndMs = maxEndRaw === "" || maxEndRaw == null ? Infinity : Math.round(Number(maxEndRaw));
+  return { minStartMs, startMs, endMs, maxEndMs };
+}
+
+function clampSubtitleTimeEditor(row) {
+  const startInput = row?.querySelector("[data-subtitle-start-input]");
+  const endInput = row?.querySelector("[data-subtitle-end-input]");
+  if (!startInput || !endInput) return;
+  const limits = subtitleTimeLimits(row);
+  let startMs = Math.round(Number(startInput.value) * 1000);
+  let endMs = Math.round(Number(endInput.value) * 1000);
+  if (!Number.isFinite(startMs)) startMs = limits.startMs;
+  if (!Number.isFinite(endMs)) endMs = limits.endMs;
+  startMs = Math.max(limits.minStartMs, startMs);
+  endMs = Math.min(limits.maxEndMs, Math.max(startMs + 1, endMs));
+  startMs = Math.min(startMs, endMs - 1);
+  startInput.value = formatSubtitleSecondValue(startMs);
+  endInput.value = formatSubtitleSecondValue(endMs);
+}
+
+function openSubtitleTimeEditor(outputId, row) {
+  if (!row) return;
+  closeSubtitleTimeEditors(outputId, row);
+  const editor = row.querySelector("[data-subtitle-time-editor]");
+  const toggle = row.querySelector("[data-subtitle-time-toggle]");
+  if (!editor || !toggle) return;
+  const limits = subtitleTimeLimits(row);
+  const maxEndLabel = Number.isFinite(limits.maxEndMs) ? formatSubtitleSecondValue(limits.maxEndMs) : "";
+  editor.innerHTML = `
+    <div class="subtitle-template-time-fields">
+      <label>
+        Início
+        <input
+          class="output-edit-input subtitle-time-input"
+          data-subtitle-start-input
+          type="number"
+          min="${escapeHtml(formatSubtitleSecondValue(limits.minStartMs))}"
+          max="${escapeHtml(formatSubtitleSecondValue(Math.max(limits.minStartMs, limits.endMs - 1)))}"
+          step="0.001"
+          value="${escapeHtml(formatSubtitleSecondValue(limits.startMs))}"
+        />
+      </label>
+      <label>
+        Fim
+        <input
+          class="output-edit-input subtitle-time-input"
+          data-subtitle-end-input
+          type="number"
+          min="${escapeHtml(formatSubtitleSecondValue(limits.startMs + 1))}"
+          ${maxEndLabel ? `max="${escapeHtml(maxEndLabel)}"` : ""}
+          step="0.001"
+          value="${escapeHtml(formatSubtitleSecondValue(limits.endMs))}"
+        />
+      </label>
+    </div>
+    <div class="subtitle-template-time-actions">
+      <button type="button" class="secondary-button" data-subtitle-time-apply="${escapeHtml(outputId)}">Aplicar</button>
+      <button type="button" class="secondary-button" data-subtitle-time-cancel="${escapeHtml(outputId)}">Cancelar</button>
+    </div>
+  `;
+  toggle.hidden = true;
+  editor.hidden = false;
+  editor.querySelector("[data-subtitle-start-input]")?.focus();
+}
+
+function commitOpenSubtitleTimeEdit(outputId) {
+  const editor = els.outputs.querySelector(
+    `[data-subtitle-time-editor="${CSS.escape(outputId)}"]:not([hidden])`,
+  );
+  if (!editor) return false;
+  const row = editor.closest("[data-subtitle-block]");
+  if (!row) return false;
+  clampSubtitleTimeEditor(row);
+  const startInput = row.querySelector("[data-subtitle-start-input]");
+  const endInput = row.querySelector("[data-subtitle-end-input]");
+  const startMs = Math.round(Number(startInput?.value) * 1000);
+  const endMs = Math.round(Number(endInput?.value) * 1000);
+  const limits = subtitleTimeLimits(row);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    throw new Error("Tempo de legenda inválido.");
+  }
+  if (startMs < limits.minStartMs) {
+    throw new Error("O início da legenda não pode ficar antes do fim da legenda anterior.");
+  }
+  if (Number.isFinite(limits.maxEndMs) && endMs > limits.maxEndMs) {
+    throw new Error("O fim da legenda não pode passar do início da próxima legenda.");
+  }
+  if (endMs <= startMs) {
+    throw new Error("O fim da legenda precisa ser maior que o início.");
+  }
+  row.dataset.subtitleStartMs = String(startMs);
+  row.dataset.subtitleEndMs = String(endMs);
+  const rows = [...els.outputs.querySelectorAll(`[data-subtitle-block="${CSS.escape(outputId)}"]`)];
+  const rowIndex = rows.indexOf(row);
+  const previousRow = rows[rowIndex - 1];
+  const nextRow = rows[rowIndex + 1];
+  if (previousRow) previousRow.dataset.subtitleMaxEndMs = String(startMs);
+  if (nextRow) nextRow.dataset.subtitleMinStartMs = String(endMs);
+  const toggle = row.querySelector("[data-subtitle-time-toggle]");
+  if (toggle) {
+    toggle.textContent = subtitleTimeTextFromRow(row);
+    toggle.hidden = false;
+  }
+  editor.hidden = true;
+  editor.innerHTML = "";
+  return true;
 }
 
 async function saveSubtitle(outputId, subtitle) {
@@ -1904,6 +2255,14 @@ async function exportEditedOutput(outputId) {
     },
   ).then(readJson);
   return payload?.data?.output || payload?.output || null;
+}
+
+async function deleteEditedOutput(outputId) {
+  const payload = await fetch(
+    `/api/podcast/jobs/${encodeURIComponent(state.jobId)}/outputs/${encodeURIComponent(outputId)}`,
+    { method: "DELETE" },
+  ).then(readJson);
+  return payload?.data?.deleted_output_id || payload?.deleted_output_id || outputId;
 }
 
 function appendOutput(output) {
@@ -2098,6 +2457,40 @@ els.outputs.addEventListener("click", async (event) => {
     return;
   }
 
+  const outputDelete = event.target.closest("[data-output-delete]");
+  if (outputDelete) {
+    const outputId = String(outputDelete.dataset.outputDelete || "");
+    if (!outputId) return;
+    const confirmed = await confirmAction({
+      title: "Excluir este clipe?",
+      message: "Este clipe editado será removido do projeto, incluindo vídeo, legenda e capas geradas para ele. Os clipes originais permanecem disponíveis.",
+      confirmLabel: "Excluir clipe",
+    });
+    if (!confirmed) return;
+    const originalText = outputDelete.textContent;
+    setActionLocked(true);
+    outputDelete.disabled = true;
+    outputDelete.textContent = "Excluindo...";
+    outputDelete.classList.add("is-deleting");
+    try {
+      const deletedId = await deleteEditedOutput(outputId);
+      removeOutput(deletedId);
+      renderOutputs(state.job);
+      loadHistory().catch(() => {});
+      els.outputsMeta.textContent = "Clipe removido do projeto.";
+    } catch (error) {
+      els.error.hidden = false;
+      els.error.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      setActionLocked(false);
+      if (document.contains(outputDelete)) {
+        outputDelete.textContent = originalText;
+        outputDelete.classList.remove("is-deleting");
+      }
+    }
+    return;
+  }
+
   const editToggle = event.target.closest("[data-edit-toggle]");
   const editSave = event.target.closest("[data-edit-save]");
   if (editToggle || editSave) {
@@ -2107,10 +2500,12 @@ els.outputs.addEventListener("click", async (event) => {
     if (!outputId) return;
     const panel = els.outputs.querySelector(`[data-edit-panel="${CSS.escape(outputId)}"]`);
     const saveButton = els.outputs.querySelector(`[data-edit-save="${CSS.escape(outputId)}"]`);
+    const subtitleButton = els.outputs.querySelector(`[data-subtitle-toggle="${CSS.escape(outputId)}"]`);
     if (editToggle) {
       const opening = panel?.hidden;
       if (panel) panel.hidden = !opening;
       if (saveButton) saveButton.hidden = !opening;
+      if (subtitleButton) subtitleButton.hidden = !opening;
       editToggle.hidden = Boolean(opening);
       if (opening) {
         loadEditPreviewVideo(outputId);
@@ -2138,6 +2533,32 @@ els.outputs.addEventListener("click", async (event) => {
     return;
   }
 
+  const timeToggle = event.target.closest("[data-subtitle-time-toggle]");
+  const timeApply = event.target.closest("[data-subtitle-time-apply]");
+  const timeCancel = event.target.closest("[data-subtitle-time-cancel]");
+  if (timeToggle || timeApply || timeCancel) {
+    const outputId = String(
+      timeToggle?.dataset.subtitleTimeToggle ||
+        timeApply?.dataset.subtitleTimeApply ||
+        timeCancel?.dataset.subtitleTimeCancel ||
+        "",
+    );
+    const row = (timeToggle || timeApply || timeCancel).closest("[data-subtitle-block]");
+    try {
+      if (timeToggle) {
+        openSubtitleTimeEditor(outputId, row);
+      } else if (timeApply) {
+        commitOpenSubtitleTimeEdit(outputId);
+      } else {
+        closeSubtitleTimeEditors(outputId);
+      }
+    } catch (error) {
+      els.error.hidden = false;
+      els.error.textContent = error instanceof Error ? error.message : String(error);
+    }
+    return;
+  }
+
   const toggle = event.target.closest("[data-subtitle-toggle]");
   const save = event.target.closest("[data-subtitle-save]");
   const mode = event.target.closest("[data-subtitle-mode]");
@@ -2156,10 +2577,23 @@ els.outputs.addEventListener("click", async (event) => {
 
   if (mode) {
     const burnSubtitles = mode.dataset.burnSubtitles === "true";
+    const confirmed = await confirmAction({
+      title: burnSubtitles ? "Salvar clipe com legenda?" : "Salvar clipe sem legenda?",
+      message: burnSubtitles
+        ? "As alterações feitas na legenda serão salvas antes de gerar uma nova versão do vídeo com texto embutido."
+        : "As alterações feitas na legenda serão salvas e o arquivo SRT continuará disponível para download, mas a nova versão do vídeo será gerada sem texto embutido.",
+      confirmLabel: burnSubtitles ? "Salvar com legenda" : "Salvar sem legenda",
+    });
+    if (!confirmed) return;
     setActionLocked(true);
     mode.disabled = true;
     mode.textContent = burnSubtitles ? "Aplicando legenda..." : "Preparando vídeo...";
     try {
+      if (editor?.dataset.loaded === "true") {
+        mode.textContent = "Salvando legenda...";
+        await saveSubtitle(outputId, subtitleFromTemplate(outputId));
+        mode.textContent = burnSubtitles ? "Aplicando legenda..." : "Preparando vídeo...";
+      }
       const updatedOutput = await setSubtitleMode(outputId, burnSubtitles);
       if (updatedOutput) replaceOutput(updatedOutput);
       renderOutputs(state.job);
@@ -2238,11 +2672,23 @@ els.outputs.addEventListener("input", (event) => {
     updateCoverPreview(coverInput.dataset.coverTitle || "");
   }
 
+  const subtitleTimeInput = event.target.closest("[data-subtitle-start-input], [data-subtitle-end-input]");
+  if (subtitleTimeInput) {
+    return;
+  }
+
   const startInput = event.target.closest("[data-edit-start]");
   const endInput = event.target.closest("[data-edit-end]");
   const outputId = startInput?.dataset.editStart || endInput?.dataset.editEnd || "";
   if (!outputId) return;
   syncClipRangeTimeline(outputId);
+});
+
+els.outputs.addEventListener("focusout", (event) => {
+  const subtitleTimeInput = event.target.closest("[data-subtitle-start-input], [data-subtitle-end-input]");
+  if (!subtitleTimeInput) return;
+  const row = subtitleTimeInput.closest("[data-subtitle-block]");
+  clampSubtitleTimeEditor(row);
 });
 
 els.outputs.addEventListener("change", (event) => {
@@ -2457,6 +2903,13 @@ els.cancelButton?.addEventListener("click", () => {
 });
 
 els.history?.addEventListener("click", (event) => {
+  const deleteButton = event.target.closest("[data-history-delete]");
+  if (deleteButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    deleteHistoryJob(deleteButton.dataset.historyDelete, deleteButton);
+    return;
+  }
   const button = event.target.closest("[data-history-job]");
   if (!button) return;
   openHistoryJob(button.dataset.historyJob).catch((error) => {

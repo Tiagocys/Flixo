@@ -17,6 +17,7 @@ from app.services.podcast import registry
 from app.services.podcast.ingest import job_dir
 from app.services.podcast.pipeline import (
     analyze_job,
+    delete_output,
     edit_output,
     read_output_subtitle,
     render_job,
@@ -161,6 +162,30 @@ def get_podcast_job(
     x_flixo_user_id: Annotated[str | None, Header(alias="X-Flixo-User-Id")] = None,
 ):
     return _public_response(job_id, include_transcript=include_transcript, user_id=x_flixo_user_id)
+
+
+@router.delete("/podcast/jobs/{job_id}", summary="Delete a podcast project and its assets")
+def delete_podcast_job(
+    job_id: str,
+    x_flixo_user_id: Annotated[str | None, Header(alias="X-Flixo-User-Id")] = None,
+):
+    try:
+        deleted_id = registry.delete_job_with_assets(job_id, x_flixo_user_id)
+    except registry.JobDeleteNotFoundError:
+        raise HttpException(task_id=job_id, status_code=404, message="Podcast job nao encontrado.")
+    except registry.JobDeleteActiveError:
+        raise HttpException(
+            task_id=job_id,
+            status_code=409,
+            message="Este projeto ainda esta sendo processado e nao pode ser excluido.",
+        )
+    except registry.JobDeleteCleanupError:
+        raise HttpException(
+            task_id=job_id,
+            status_code=500,
+            message="Nao foi possivel excluir o projeto agora. Tente novamente em instantes.",
+        )
+    return utils.get_response(200, {"deleted_id": deleted_id})
 
 
 @router.post("/podcast/jobs/{job_id}/cancel", summary="Cancel a running podcast job")
@@ -415,3 +440,20 @@ def edit_podcast_output_endpoint(
     except RuntimeError as exc:
         raise HttpException(task_id=job_id, status_code=400, message=str(exc))
     return utils.get_response(200, {"output": output})
+
+
+@router.delete("/podcast/jobs/{job_id}/outputs/{output_id}", summary="Delete an edited podcast short")
+def delete_podcast_output_endpoint(
+    job_id: str,
+    output_id: str,
+    x_flixo_user_id: Annotated[str | None, Header(alias="X-Flixo-User-Id")] = None,
+):
+    job = registry.get_job(job_id) or restore_job_from_metadata(job_id)
+    if not job:
+        raise HttpException(task_id=job_id, status_code=404, message="Podcast job nao encontrado.")
+    _ensure_owner(job, x_flixo_user_id)
+    try:
+        output = delete_output(job_id, output_id)
+    except RuntimeError as exc:
+        raise HttpException(task_id=job_id, status_code=400, message=str(exc))
+    return utils.get_response(200, {"deleted_output_id": str(output.get("id") or output_id)})

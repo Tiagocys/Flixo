@@ -97,10 +97,12 @@ def edit_podcast_output(
 
     edited_duration = render_result.get("duration") or _probe_duration(str(edit_video_path))
     title = str(output.get("title") or "Podcast short").strip()
+    cover_title = _clean_edited_suffix(str(output.get("cover_title") or title).strip())
     return {
         **output,
         "id": f"{output.get('id')}-{version}",
         "title": f"{title} (editado)"[:90],
+        "cover_title": cover_title[:80],
         "duration": edited_duration,
         "source_duration": edited_duration,
         "removed_silence_seconds": output.get("removed_silence_seconds", 0),
@@ -119,6 +121,13 @@ def edit_podcast_output(
             "append_position": position if append_output else "",
         },
     }
+
+
+def _clean_edited_suffix(value: str) -> str:
+    cleaned = value.strip()
+    while cleaned.lower().endswith("(editado)"):
+        cleaned = cleaned[:-9].strip()
+    return cleaned or "Podcast short"
 
 
 def _find_output(outputs: list[dict[str, Any]], output_id: str | None) -> dict[str, Any] | None:

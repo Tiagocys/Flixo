@@ -51,6 +51,10 @@ def ytdlp_common_args() -> list[str]:
     extractor_args = (os.getenv("YTDLP_EXTRACTOR_ARGS") or "").strip()
     if extractor_args:
         args.extend(["--extractor-args", extractor_args])
+    else:
+        # The default client currently used by yt-dlp can return media URLs
+        # that YouTube rejects with 403 in some network environments.
+        args.extend(["--extractor-args", "youtube:player_client=android"])
 
     impersonate = (os.getenv("YTDLP_IMPERSONATE") or "").strip()
     if impersonate:

@@ -20,6 +20,20 @@ _retention_stop = Event()
 _retention_thread: Thread | None = None
 STALE_JOB_MESSAGE = "Processo interrompido antes de concluir. Inicie uma nova analise para este video."
 TERMINAL_STATUSES = {"done", "failed", "cancelled"}
+ACTIVE_STATUSES = {"queued", "running", "rendering"}
+ACTIVE_STEPS = {"queued", "ingesting", "transcribing", "analyzing", "rendering"}
+
+
+class JobDeleteNotFoundError(Exception):
+    pass
+
+
+class JobDeleteActiveError(Exception):
+    pass
+
+
+class JobDeleteCleanupError(Exception):
+    pass
 
 
 def create_job(job_id: str, **kwargs) -> ClipperJob:
@@ -76,10 +90,29 @@ def update_job(job_id: str, updater: Callable[[ClipperJob], None]) -> ClipperJob
         return job
 
 
-def delete_job(job_id: str) -> None:
+def delete_job(job_id: str, user_id: str | None = None) -> bool:
+    if not clipper_database.delete_job(job_id, user_id=user_id):
+        return False
     with _lock:
         _jobs.pop(job_id, None)
-    clipper_database.delete_job(job_id)
+    return True
+
+
+def delete_job_with_assets(job_id: str, user_id: str | None) -> str:
+    job = get_job(job_id)
+    if not job or not user_id or not job.user_id or job.user_id != user_id:
+        raise JobDeleteNotFoundError(job_id)
+    if job.status in ACTIVE_STATUSES or job.current_step in ACTIVE_STEPS:
+        raise JobDeleteActiveError(job_id)
+
+    try:
+        _delete_job_assets(job)
+        if not delete_job(job.id, user_id=user_id):
+            raise RuntimeError("failed to delete podcast project record")
+    except Exception as exc:
+        logger.exception(f"failed to delete podcast job: {job.id}")
+        raise JobDeleteCleanupError(job.id) from exc
+    return job.id
 
 
 def purge_expired_jobs() -> int:
@@ -100,7 +133,8 @@ def purge_expired_jobs() -> int:
     for job in expired:
         try:
             _delete_job_assets(job)
-            delete_job(job.id)
+            if not delete_job(job.id):
+                raise RuntimeError("failed to delete expired podcast project record")
             deleted += 1
         except Exception:
             logger.exception(f"failed to purge expired podcast job: {job.id}")
@@ -137,11 +171,16 @@ def _history_retention_seconds() -> int:
 
 def _delete_job_assets(job: ClipperJob) -> None:
     for key in _r2_keys_for_job(job):
-        r2_storage.delete_file(key)
+        if not r2_storage.delete_file(key):
+            raise RuntimeError(f"failed to delete R2 object: {key}")
     task_path = Path(utils.task_dir(os.path.join("podcast", job.id))).resolve()
     tasks_root = Path(utils.task_dir("podcast")).resolve()
-    if task_path.is_dir() and task_path.is_relative_to(tasks_root):
-        shutil.rmtree(task_path, ignore_errors=True)
+    if task_path == tasks_root or tasks_root not in task_path.parents:
+        raise RuntimeError("invalid podcast project cleanup path")
+    if task_path.exists():
+        if not task_path.is_dir():
+            raise RuntimeError("podcast project cleanup path is not a directory")
+        shutil.rmtree(task_path)
 
 
 def _r2_keys_for_job(job: ClipperJob) -> set[str]:

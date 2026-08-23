@@ -184,6 +184,19 @@
         </section>
       </section>
     </main>
+    <div id="clipper-confirm-modal" class="clipper-modal" hidden>
+      <div class="clipper-modal-backdrop" data-confirm-cancel></div>
+      <section class="clipper-modal-card" role="dialog" aria-modal="true" aria-labelledby="clipper-confirm-title">
+        <div class="clipper-modal-body">
+          <h2 id="clipper-confirm-title">Confirmar ação</h2>
+          <p id="clipper-confirm-message">Confirme para continuar.</p>
+        </div>
+        <div class="clipper-modal-actions">
+          <button type="button" class="secondary-button" data-confirm-cancel>Cancelar</button>
+          <button type="button" data-confirm-accept>Confirmar</button>
+        </div>
+      </section>
+    </div>
     <script src="/auth.js" defer></script>
     <script src="/podcast.js" defer></script>
   </body>

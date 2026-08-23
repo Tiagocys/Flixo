@@ -1570,13 +1570,12 @@ button:active {
 .subtitle-template-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
 }
 
 .subtitle-template-meta span,
-.subtitle-template-meta code,
-.subtitle-template-meta em {
+.subtitle-template-time {
   border-radius: 999px;
   background: rgba(17, 24, 39, 0.06);
   color: var(--muted);
@@ -1585,16 +1584,57 @@ button:active {
   padding: 5px 8px;
 }
 
-.subtitle-template-meta em {
-  margin-left: auto;
-  font-style: normal;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.subtitle-template-time {
+  border: 0;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  line-height: 1.3;
+  text-align: left;
 }
 
-.subtitle-template-meta code {
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
-  user-select: none;
+.subtitle-template-time:hover,
+.subtitle-template-time:focus-visible {
+  background: rgba(17, 24, 39, 0.12);
+  color: var(--text);
+}
+
+.subtitle-template-time-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 8px;
+  width: min(100%, 360px);
+}
+
+.subtitle-template-time-fields label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.subtitle-time-input {
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
+.subtitle-template-time-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.subtitle-template-time-editor[hidden] {
+  display: none;
+}
+
+.subtitle-template-time-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.subtitle-template-time-actions .secondary-button {
+  min-height: 34px;
+  padding: 7px 10px;
 }
 
 .subtitle-template-text {
@@ -3262,6 +3302,20 @@ button:hover,
   color: #ffffff;
 }
 
+.clipper-lite .subtitle-template-time {
+  border: 0;
+  background: rgba(17, 24, 39, 0.06);
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.clipper-lite .subtitle-template-time:hover:not(:disabled),
+.clipper-lite .subtitle-template-time:focus-visible:not(:disabled) {
+  background: rgba(17, 24, 39, 0.12);
+  color: var(--text);
+  box-shadow: none;
+}
+
 button:disabled,
 .secondary-button:disabled,
 .workspace-tab:disabled,
@@ -3272,4 +3326,143 @@ button:disabled,
 
 a.secondary-button.is-disabled {
   pointer-events: none;
+}
+
+.has-open-modal {
+  overflow: hidden;
+}
+
+.clipper-modal[hidden] {
+  display: none;
+}
+
+.clipper-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.clipper-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.42);
+}
+
+.clipper-modal-card {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 460px);
+  border: 1px solid rgba(17, 24, 39, 0.12);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(17, 24, 39, 0.24);
+}
+
+.clipper-modal-body {
+  display: grid;
+  gap: 10px;
+  padding: 22px 22px 8px;
+}
+
+.clipper-modal-body h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 1.15rem;
+  line-height: 1.2;
+}
+
+.clipper-modal-body p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.clipper-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 22px 22px;
+}
+
+.clipper-modal-actions button {
+  min-width: 120px;
+}
+
+.history-card-content {
+  min-width: 0;
+}
+
+.history-card-content > strong {
+  overflow-wrap: anywhere;
+}
+
+.history-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.history-card-actions button {
+  min-width: 112px;
+  margin: 0;
+  box-shadow: none;
+}
+
+.clipper-lite .history-delete-button {
+  border: 1px solid rgba(220, 38, 38, 0.52);
+  background: #ffffff;
+  color: #b91c1c;
+  box-shadow: none;
+}
+
+.clipper-lite .output-delete-button {
+  border: 1px solid rgba(220, 38, 38, 0.52);
+  background: #ffffff;
+  color: #b91c1c;
+  box-shadow: none;
+}
+
+.clipper-lite .history-delete-button:hover:not(:disabled),
+.clipper-lite .history-delete-button:focus-visible:not(:disabled),
+.clipper-lite .output-delete-button:hover:not(:disabled),
+.clipper-lite .output-delete-button:focus-visible:not(:disabled) {
+  border-color: #b91c1c;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.clipper-lite .history-delete-button.is-deleting,
+.clipper-lite .history-delete-button.is-deleting:disabled,
+.clipper-lite .output-delete-button.is-deleting,
+.clipper-lite .output-delete-button.is-deleting:disabled {
+  border-color: #b91c1c;
+  background: #b91c1c;
+  color: #ffffff;
+  opacity: 1;
+}
+
+@media (max-width: 700px) {
+  .history-card-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .history-card-actions button {
+    flex: 1 1 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .history-card-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .history-card-actions button {
+    width: 100%;
+  }
 }

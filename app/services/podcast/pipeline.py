@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from pathlib import Path
 
@@ -248,8 +249,7 @@ def update_output_subtitle(job_id: str, output_id: str, subtitle_text: str) -> d
     if not camera_path.is_file():
         camera_path = Path(str(video_path).replace(".mp4", ".camera.mp4"))
     _validate_srt_text(subtitle_text)
-    original_subtitle = subtitle_path.read_text(encoding="utf-8") if subtitle_path.is_file() else ""
-    _validate_srt_timestamps_unchanged(original_subtitle, subtitle_text)
+    _validate_srt_timing_sequence(subtitle_text)
     subtitle_path.write_text(subtitle_text.strip() + "\n", encoding="utf-8")
     render_result = reburn_podcast_subtitles(
         camera_path=str(camera_path),
@@ -414,6 +414,39 @@ def edit_output(
     return edited_output
 
 
+def delete_output(job_id: str, output_id: str) -> dict:
+    job = registry.get_job(job_id) or restore_job_from_metadata(job_id)
+    if not job:
+        raise RuntimeError("Podcast job nao encontrado.")
+
+    output = None
+    remaining_outputs = []
+    for item in job.outputs:
+        if str(item.get("id") or "") == output_id:
+            output = dict(item)
+        else:
+            remaining_outputs.append(item)
+    if output is None:
+        raise RuntimeError("Short de podcast nao encontrado.")
+    if not output.get("edited_from"):
+        raise RuntimeError("Apenas clipes editados podem ser excluidos.")
+
+    _delete_output_assets(job_id, output)
+
+    def apply(current):
+        current.outputs = remaining_outputs
+        current.status = "done"
+        current.current_step = "done"
+        current.progress = 100
+        current.estimated_remaining_seconds = None
+        current.metadata_path = write_job_metadata(current, job_dir(job_id))
+
+    updated_job = registry.update_job(job_id, apply)
+    if not updated_job:
+        raise RuntimeError("Podcast job nao encontrado.")
+    return output
+
+
 def _clean_text(value: str, limit: int) -> str:
     text = " ".join(str(value or "").strip().split())
     return text[:limit]
@@ -502,6 +535,63 @@ def _persist_cover_assets(job_id: str, output: dict) -> dict:
     return updated
 
 
+def _delete_output_assets(job_id: str, output: dict) -> None:
+    r2_keys = {
+        str(output.get("video_key") or output.get("r2_video_key") or "").strip(),
+        str(output.get("subtitle_key") or output.get("r2_subtitle_key") or "").strip(),
+        str(output.get("cover_key") or "").strip(),
+    }
+    for option in output.get("cover_options") or []:
+        if not isinstance(option, dict):
+            continue
+        r2_keys.add(str(option.get("key") or "").strip())
+        r2_keys.add(str(option.get("frame_key") or "").strip())
+
+    for key in sorted(key for key in r2_keys if key):
+        if _safe_output_key(job_id, key):
+            r2_storage.delete_file(key)
+
+    for path in _output_local_paths(output):
+        _delete_local_output_path(job_id, path)
+
+
+def _safe_output_key(job_id: str, key: str) -> bool:
+    value = str(key or "").strip().lstrip("/")
+    return value.startswith(f"podcast/{job_id}/outputs/") and ".." not in Path(value).parts
+
+
+def _output_local_paths(output: dict) -> set[str]:
+    paths = {
+        str(output.get("video_path") or ""),
+        str(output.get("subtitle_path") or ""),
+    }
+    video_path_value = str(output.get("video_path") or "")
+    video_path = Path(video_path_value)
+    if video_path_value:
+        paths.add(str(video_path.with_suffix("").with_suffix(".camera.mp4")))
+        paths.add(str(video_path).replace(".mp4", ".camera.mp4"))
+    for option in output.get("cover_options") or []:
+        if not isinstance(option, dict):
+            continue
+        paths.add(str(option.get("path") or ""))
+        paths.add(str(option.get("frame_path") or ""))
+    return {path for path in paths if path}
+
+
+def _delete_local_output_path(job_id: str, path: str) -> None:
+    try:
+        base = Path(job_dir(job_id)).resolve()
+        target = Path(path).resolve()
+        if not target.is_relative_to(base):
+            raise RuntimeError("Caminho fora do job de podcast.")
+        if target.is_file():
+            target.unlink(missing_ok=True)
+    except RuntimeError:
+        raise
+    except Exception:
+        logger.exception(f"failed to delete podcast output asset: job={job_id}, path={path}")
+
+
 def _cleanup_source_video(job_id: str, source_file: str | None) -> None:
     if not source_file:
         return
@@ -571,9 +661,35 @@ def _srt_timestamps(value: str) -> list[str]:
     ]
 
 
-def _validate_srt_timestamps_unchanged(original: str, updated: str) -> None:
-    if _srt_timestamps(original) != _srt_timestamps(updated):
-        raise RuntimeError("Os timestamps da legenda nao podem ser alterados.")
+def _srt_timestamp_ms(value: str) -> int:
+    match = re.fullmatch(r"(\d+):(\d{2}):(\d{2})[,.](\d{1,3})", value.strip())
+    if not match:
+        raise RuntimeError("Formato SRT invalido: timestamp mal formatado.")
+    hours, minutes, seconds, milliseconds = match.groups()
+    return (
+        int(hours) * 3_600_000
+        + int(minutes) * 60_000
+        + int(seconds) * 1_000
+        + int(milliseconds.ljust(3, "0"))
+    )
+
+
+def _validate_srt_timing_sequence(value: str) -> None:
+    previous_end = -1
+    timestamps = _srt_timestamps(value)
+    if not timestamps:
+        raise RuntimeError("Formato SRT invalido: timestamps ausentes.")
+    for line in timestamps:
+        parts = [part.strip() for part in line.split("-->", 1)]
+        if len(parts) != 2:
+            raise RuntimeError("Formato SRT invalido: intervalo de tempo mal formatado.")
+        start = _srt_timestamp_ms(parts[0])
+        end = _srt_timestamp_ms(parts[1])
+        if end <= start:
+            raise RuntimeError("Formato SRT invalido: o fim da legenda precisa ser maior que o inicio.")
+        if start < previous_end:
+            raise RuntimeError("Formato SRT invalido: as legendas nao podem se sobrepor.")
+        previous_end = end
 
 
 def _transcription_initial_eta(source_file: str | None) -> int:
