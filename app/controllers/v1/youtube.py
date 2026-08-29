@@ -16,23 +16,22 @@ class YouTubeUploadRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
-    cover_url: str | None = None
-    cover_key: str | None = None
     privacy_status: str = Field(default="private", pattern="^(private|unlisted|public)$")
+    publish_at: str | None = None
     video_language: str = "pt-BR"
     audio_language: str = "pt-BR"
-    caption_language: str = "pt-BR"
+    category_id: str = Field(default="", pattern="^$|^[0-9]+$")
 
 
 class YouTubeJobUploadRequest(BaseModel):
     job_id: str
-    overrides: dict[str, dict[str, str | list[str]]] = Field(default_factory=dict)
+    overrides: dict[str, dict[str, str | list[str] | None]] = Field(default_factory=dict)
     privacy_status: str = Field(default="private", pattern="^(private|unlisted|public)$")
     cleanup_after_upload: bool = True
     archive_after_upload: bool = True
     video_language: str = "pt-BR"
     audio_language: str = "pt-BR"
-    caption_language: str = "pt-BR"
+    category_id: str = Field(default="", pattern="^$|^[0-9]+$")
 
 
 @router.get("/youtube/oauth/status", summary="Get YouTube OAuth status")
@@ -93,12 +92,11 @@ def youtube_upload(body: YouTubeUploadRequest):
             title=body.title,
             description=body.description,
             tags=body.tags,
-            cover_url=body.cover_url,
-            cover_key=body.cover_key,
             privacy_status=body.privacy_status,
+            publish_at=body.publish_at,
             video_language=body.video_language,
             audio_language=body.audio_language,
-            caption_language=body.caption_language,
+            category_id=body.category_id,
         )
     except RuntimeError as exc:
         raise HttpException(task_id=body.job_id, status_code=400, message=str(exc))
@@ -115,7 +113,7 @@ def youtube_upload_job(body: YouTubeJobUploadRequest):
             cleanup_after_upload=body.cleanup_after_upload,
             video_language=body.video_language,
             audio_language=body.audio_language,
-            caption_language=body.caption_language,
+            category_id=body.category_id,
         )
     except RuntimeError as exc:
         raise HttpException(task_id=body.job_id, status_code=400, message=str(exc))
@@ -131,12 +129,11 @@ def youtube_upload_podcast(body: YouTubeUploadRequest):
             title=body.title,
             description=body.description,
             tags=body.tags,
-            cover_url=body.cover_url,
-            cover_key=body.cover_key,
             privacy_status=body.privacy_status,
+            publish_at=body.publish_at,
             video_language=body.video_language,
             audio_language=body.audio_language,
-            caption_language=body.caption_language,
+            category_id=body.category_id,
         )
     except RuntimeError as exc:
         raise HttpException(task_id=body.job_id, status_code=400, message=str(exc))
@@ -153,7 +150,7 @@ def youtube_upload_podcast_job(body: YouTubeJobUploadRequest, background_tasks: 
             cleanup_after_upload=body.cleanup_after_upload,
             video_language=body.video_language,
             audio_language=body.audio_language,
-            caption_language=body.caption_language,
+            category_id=body.category_id,
         )
         if body.archive_after_upload:
             background_tasks.add_task(youtube_uploader.compress_podcast_job_for_history, body.job_id)

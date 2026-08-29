@@ -43,7 +43,7 @@ def download_youtube_url(url: str, output_dir: str) -> str:
         shutil.copy2(cached, target)
         return str(target)
 
-    return str(_download_youtube(url, Path(output_dir), 720))
+    return str(_download_youtube(url, Path(output_dir), 1080))
 
 
 def ingest_url(url: str, output_dir: str) -> str:

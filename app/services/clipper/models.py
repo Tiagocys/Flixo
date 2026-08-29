@@ -25,6 +25,9 @@ class ClipCandidate:
     reason: str
     scores: dict[str, int]
     visual_focus: dict[str, Any] = field(default_factory=dict)
+    youtube_tags: list[str] = field(default_factory=list)
+    preview_frame_path: str | None = None
+    preview_frame_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +41,9 @@ class ClipCandidate:
             "reason": self.reason,
             "scores": self.scores,
             "visual_focus": self.visual_focus,
+            "youtube_tags": self.youtube_tags,
+            "preview_frame_path": self.preview_frame_path,
+            "preview_frame_url": self.preview_frame_url,
         }
 
 
@@ -60,6 +66,7 @@ class ClipperJob:
     candidates: list[ClipCandidate] = field(default_factory=list)
     outputs: list[dict[str, Any]] = field(default_factory=list)
     metadata_path: str | None = None
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self, include_transcript: bool = False) -> dict[str, Any]:
         data = {
@@ -79,6 +86,7 @@ class ClipperJob:
             "candidates": [candidate.to_dict() for candidate in self.candidates],
             "outputs": self.outputs,
             "metadata_path": self.metadata_path,
+            "source_metadata": self.source_metadata,
         }
         if include_transcript:
             data["transcript"] = [segment.to_dict() for segment in self.transcript]
@@ -105,6 +113,13 @@ def clip_candidate_from_dict(data: dict[str, Any]) -> ClipCandidate:
         reason=str(data.get("reason") or ""),
         scores=data.get("scores") if isinstance(data.get("scores"), dict) else {},
         visual_focus=data.get("visual_focus") if isinstance(data.get("visual_focus"), dict) else {},
+        youtube_tags=[
+            str(item).strip().lstrip("#")
+            for item in data.get("youtube_tags", data.get("hashtags", [])) or []
+            if str(item).strip()
+        ],
+        preview_frame_path=data.get("preview_frame_path"),
+        preview_frame_url=data.get("preview_frame_url"),
     )
 
 
@@ -139,4 +154,5 @@ def clipper_job_from_dict(data: dict[str, Any]) -> ClipperJob:
         ],
         outputs=data.get("outputs") if isinstance(data.get("outputs"), list) else [],
         metadata_path=data.get("metadata_path"),
+        source_metadata=data.get("source_metadata") if isinstance(data.get("source_metadata"), dict) else {},
     )

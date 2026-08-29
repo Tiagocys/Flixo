@@ -37,21 +37,22 @@ def analyze_transcript(
     max_candidates: int = 8,
     min_duration: int = 20,
     max_duration: int = 90,
+    source_context: dict | None = None,
 ) -> list[ClipCandidate]:
     video_duration = max((segment.end for segment in segments), default=0)
     effective_min = min(min_duration, max(6, int(video_duration // 2) or min_duration))
     candidates: list[ClipCandidate] = []
 
     for block in transcript_blocks(segments):
-        prompt = build_clip_analysis_prompt(block, max_candidates, effective_min, max_duration)
+        prompt = build_clip_analysis_prompt(block, max_candidates, effective_min, max_duration, source_context)
         response = llm._generate_response(prompt)  # Existing project adapter; sanitized on failure.
         if response.startswith("Error:"):
             logger.warning(f"clipper llm analysis failed, using fallback: {response}")
             continue
-        candidates.extend(_parse_candidates(response, video_duration, effective_min, max_duration))
+        candidates.extend(_parse_candidates(response, video_duration, effective_min, max_duration, source_context))
 
     if not candidates:
-        candidates = _fallback_candidates(segments, max_candidates, effective_min, max_duration)
+        candidates = _fallback_candidates(segments, max_candidates, effective_min, max_duration, source_context)
 
     candidates = _fit_candidates_to_transcript(candidates, segments, effective_min, max_duration)
     return dedupe_and_rank(candidates, max_candidates)
@@ -62,6 +63,7 @@ def _parse_candidates(
     video_duration: float,
     min_duration: int,
     max_duration: int,
+    source_context: dict | None = None,
 ) -> list[ClipCandidate]:
     payload = _loads_json(response)
     raw_clips = payload.get("clips", payload if isinstance(payload, list) else [])
@@ -80,17 +82,21 @@ def _parse_candidates(
         if duration < min_duration * 0.65 or duration > max_duration * 1.25:
             continue
         scores = _scores(raw.get("scores"))
+        title = str(raw.get("title") or "Corte sugerido").strip()[:100]
+        summary = str(raw.get("summary") or "").strip()[:500]
+        youtube_tags = _candidate_hashtags(raw.get("hashtags") or raw.get("youtube_tags"), title, summary, source_context)
         candidates.append(
             ClipCandidate(
                 id=f"clip-{uuid4().hex[:8]}",
                 start=round(start, 2),
                 end=round(end, 2),
                 duration=round(duration, 2),
-                title=str(raw.get("title") or "Corte sugerido").strip()[:90],
+                title=_shorts_title(title, youtube_tags, summary),
                 hook=str(raw.get("hook") or "").strip()[:200],
-                summary=str(raw.get("summary") or "").strip()[:400],
+                summary=summary[:400],
                 reason=str(raw.get("reason") or "").strip()[:500],
                 scores=scores,
+                youtube_tags=youtube_tags,
             )
         )
     return candidates
@@ -136,6 +142,8 @@ def _fit_candidates_to_transcript(
                 summary=candidate.summary,
                 reason=candidate.reason,
                 scores=candidate.scores,
+                visual_focus=candidate.visual_focus,
+                youtube_tags=candidate.youtube_tags,
             )
         )
     return fitted
@@ -244,6 +252,7 @@ def _fallback_candidates(
     max_candidates: int,
     min_duration: int,
     max_duration: int,
+    source_context: dict | None = None,
 ) -> list[ClipCandidate]:
     windows: list[ClipCandidate] = []
     stride = max(1, min_duration // 2)
@@ -263,13 +272,15 @@ def _fallback_candidates(
             continue
         text = " ".join(segment.text for segment in selected)
         score = max(55, min(82, 55 + len(text) // 45))
+        title = f"Trecho relevante {index + 1}"
+        youtube_tags = _candidate_hashtags([], title, text[:320], source_context)
         windows.append(
             ClipCandidate(
                 id=f"clip-fallback-{index + 1}",
                 start=round(real_start, 2),
                 end=round(real_end, 2),
                 duration=round(duration, 2),
-                title=f"Trecho relevante {index + 1}",
+                title=_shorts_title(title, youtube_tags, text),
                 hook=selected[0].text[:180],
                 summary=text[:320],
                 reason="Fallback heuristico: trecho com densidade de fala e duracao adequada.",
@@ -281,6 +292,7 @@ def _fallback_candidates(
                     "emotion": score - 10,
                     "overall": score,
                 },
+                youtube_tags=youtube_tags,
             )
         )
         if len(windows) >= max_candidates * 2:
@@ -315,3 +327,167 @@ def _score(value, fallback: int) -> int:
     except (TypeError, ValueError):
         parsed = fallback
     return max(0, min(100, parsed))
+
+
+def _candidate_hashtags(raw_tags, title: str, summary: str, source_context: dict | None = None) -> list[str]:
+    tags: list[str] = []
+
+    def add(value: object) -> None:
+        clean = _clean_hashtag(value)
+        if clean and clean.lower() not in {tag.lower() for tag in tags}:
+            tags.append(clean)
+
+    context = source_context if isinstance(source_context, dict) else {}
+    source_tags = context.get("tags") if isinstance(context.get("tags"), list) else []
+    channel = str(context.get("channel") or context.get("uploader") or "").strip()
+    text = _normalize_text(
+        " ".join(
+            [
+                title,
+                summary,
+                str(context.get("title") or ""),
+                channel,
+                " ".join(str(item) for item in context.get("categories", []) or []),
+                " ".join(str(tag) for tag in source_tags[:30]),
+            ]
+        )
+    )
+
+    if _looks_like_comedy(text):
+        for tag in ("StandUp", "Comedia", "Humor", "Brasil"):
+            add(tag)
+    if "sao paulo" in text or re.search(r"\bsp\b", text):
+        for tag in ("SaoPaulo", "SP", "Brasil"):
+            add(tag)
+    if "ferrari 458" in text:
+        for tag in ("Ferrari458", "Ferrari", "Supercarros"):
+            add(tag)
+    elif "ferrari" in text:
+        for tag in ("Ferrari", "Supercarros"):
+            add(tag)
+    if any(term in text for term in ("carro", "oficina", "motor", "roda", "automotivo")):
+        for tag in ("Carros", "Automotivo"):
+            add(tag)
+
+    for tag in raw_tags or []:
+        add(tag)
+        if len(tags) >= 10:
+            break
+    add(channel)
+    for tag in source_tags:
+        add(tag)
+        if len(tags) >= 10:
+            break
+    for tag in _keyword_hashtags(text):
+        add(tag)
+        if len(tags) >= 10:
+            break
+
+    return tags[:10]
+
+
+def _shorts_title(title: str, tags: list[str], summary: str) -> str:
+    clean = re.sub(r"\s+", " ", title).strip() or "Corte imperdivel"
+    if "#" in clean:
+        return clean[:100]
+    emoji = "" if _has_emoji(clean) else _emoji_for_text(f"{clean} {summary} {' '.join(tags)}")
+    suffix_tags = [f"#{tag}" for tag in tags[:3] if tag]
+    suffix = " ".join(part for part in [emoji, *suffix_tags] if part).strip()
+    if not suffix:
+        return clean[:100]
+    available = max(20, 100 - len(suffix) - 1)
+    return f"{clean[:available].rstrip(' ,.;:-')} {suffix}".strip()[:100]
+
+
+def _clean_hashtag(value: object) -> str:
+    text = str(value or "").strip().lstrip("#")
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE)
+    words = [word for word in re.split(r"[\s_-]+", text) if word]
+    if not words:
+        return ""
+    compact = "".join(word[:1].upper() + word[1:] for word in words)[:60]
+    blocked = {
+        "Shorts",
+        "Youtube",
+        "Podcast",
+        "Video",
+        "Clip",
+        "Corte",
+        "Viral",
+        "Trending",
+    }
+    return "" if compact in blocked or len(compact) < 3 else compact
+
+
+def _keyword_hashtags(text: str) -> list[str]:
+    stopwords = {
+        "sobre",
+        "porque",
+        "como",
+        "esse",
+        "essa",
+        "muito",
+        "mais",
+        "menos",
+        "video",
+        "trecho",
+        "corte",
+        "clipe",
+        "momento",
+        "voce",
+        "para",
+        "fala",
+        "falando",
+    }
+    tags: list[str] = []
+    for word in re.findall(r"[a-z0-9]{4,}", text):
+        if word in stopwords or word.isdigit() or word in tags:
+            continue
+        tags.append(word[:1].upper() + word[1:])
+        if len(tags) >= 8:
+            break
+    return tags
+
+
+def _looks_like_comedy(text: str) -> bool:
+    return any(
+        term in text
+        for term in (
+            "stand up",
+            "standup",
+            "comedia",
+            "comedy",
+            "humor",
+            "piada",
+            "plateia",
+            "risada",
+            "palco",
+            "show de humor",
+            "comediante",
+        )
+    )
+
+
+def _emoji_for_text(text: str) -> str:
+    normalized = _normalize_text(text)
+    if _looks_like_comedy(normalized):
+        return "😂"
+    if any(term in normalized for term in ("carro", "ferrari", "motor", "oficina")):
+        return "🏎️"
+    if any(term in normalized for term in ("absurdo", "impossivel", "incrivel", "segredo")):
+        return "🤯"
+    return "🔥"
+
+
+def _has_emoji(text: str) -> bool:
+    return any(ord(char) > 10_000 for char in text)
+
+
+def _normalize_text(text: str) -> str:
+    normalized = text.lower()
+    normalized = normalized.replace("á", "a").replace("à", "a").replace("ã", "a").replace("â", "a")
+    normalized = normalized.replace("é", "e").replace("ê", "e").replace("í", "i")
+    normalized = normalized.replace("ó", "o").replace("ô", "o").replace("õ", "o")
+    normalized = normalized.replace("ú", "u").replace("ç", "c")
+    return normalized

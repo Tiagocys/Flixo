@@ -15,6 +15,23 @@ import {
 
 export type { JobRow } from "./types";
 
+export interface ClipperProjectRow {
+  id: string;
+  user_id?: string | null;
+  status?: string | null;
+  current_step?: string | null;
+  progress?: number | null;
+  title?: string | null;
+  source_url?: string | null;
+  original_name?: string | null;
+  candidates_count?: number | null;
+  outputs_count?: number | null;
+  r2_outputs_count?: number | null;
+  data?: Record<string, unknown> | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 const memoryStore = (globalThis as unknown as {
   __mptJobs?: Map<string, JobRow>;
 }).__mptJobs ?? new Map<string, JobRow>();
@@ -71,6 +88,10 @@ function mediaAssetsTableName(env: WorkerEnv): string {
   return env.MEDIA_ASSETS_TABLE || "media_assets";
 }
 
+function clipperProjectsTableName(env: WorkerEnv): string {
+  return String(env.CLIPPER_PROJECTS_TABLE || "clipper_projects");
+}
+
 function isMissingSupabaseResource(response: Response): boolean {
   return response.status === 404;
 }
@@ -108,6 +129,60 @@ function mediaMemorySelect(limit: number, type?: string, userId?: string): Media
 
 export function supabaseAvailable(env: WorkerEnv): boolean {
   return isSupabaseConfigured(env);
+}
+
+export async function listClipperProjects(
+  env: WorkerEnv,
+  limit = 20,
+  userId?: string
+): Promise<ClipperProjectRow[]> {
+  if (!isSupabaseConfigured(env)) return [];
+
+  const params = new URLSearchParams();
+  params.set(
+    "select",
+    "id,user_id,status,current_step,progress,title,source_url,original_name,candidates_count,outputs_count,r2_outputs_count,created_at,updated_at"
+  );
+  params.set("order", "updated_at.desc");
+  params.set("limit", String(Math.max(1, Math.min(50, Number(limit || 20)))));
+  if (userId) params.set("user_id", `eq.${userId}`);
+
+  const response = await supabaseFetch(
+    env,
+    `${clipperProjectsTableName(env)}?${params.toString()}`,
+    { method: "GET" }
+  );
+  if (!response.ok) {
+    if (isMissingSupabaseResource(response)) return [];
+    throw new Error(`failed to list clipper projects: ${response.status}`);
+  }
+  return (await response.json()) as ClipperProjectRow[];
+}
+
+export async function getClipperProject(
+  env: WorkerEnv,
+  id: string,
+  userId?: string
+): Promise<ClipperProjectRow | null> {
+  if (!isSupabaseConfigured(env)) return null;
+
+  const params = new URLSearchParams();
+  params.set("id", `eq.${id}`);
+  params.set("select", "*");
+  params.set("limit", "1");
+  if (userId) params.set("user_id", `eq.${userId}`);
+
+  const response = await supabaseFetch(
+    env,
+    `${clipperProjectsTableName(env)}?${params.toString()}`,
+    { method: "GET" }
+  );
+  if (!response.ok) {
+    if (isMissingSupabaseResource(response)) return null;
+    throw new Error(`failed to fetch clipper project: ${response.status}`);
+  }
+  const rows = (await response.json()) as ClipperProjectRow[];
+  return rows[0] || null;
 }
 
 export async function listJobs(env: WorkerEnv, limit = 8, userId?: string): Promise<JobRow[]> {

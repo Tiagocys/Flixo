@@ -6,6 +6,7 @@ from app.utils import utils
 
 
 _BREAK_AFTER_RE = re.compile(r"([,;:.!?])$")
+_WORD_SUBTITLE_MAX_CHARS = 12
 
 
 def compact_subtitle_segments(
@@ -42,13 +43,81 @@ def compact_subtitle_segments(
     return compacted
 
 
+def word_by_word_segments(
+    segments: list[TranscriptSegment],
+) -> list[TranscriptSegment]:
+    words_only: list[TranscriptSegment] = []
+    for segment in segments:
+        text = " ".join(segment.text.split())
+        words = text.split()
+        if not words:
+            continue
+        duration = max(0.1, segment.end - segment.start)
+        word_duration = duration / len(words)
+        cursor = segment.start
+        for index, word in enumerate(words):
+            end = segment.end if index == len(words) - 1 else cursor + word_duration
+            if end <= cursor:
+                continue
+            words_only.append(
+                TranscriptSegment(
+                    start=round(cursor, 3),
+                    end=round(end, 3),
+                    text=_format_word_subtitle(word),
+                )
+            )
+            cursor = end
+    return words_only
+
+
+def format_subtitle_segments(
+    segments: list[TranscriptSegment],
+    subtitle_style: str = "standard",
+) -> list[TranscriptSegment]:
+    if normalize_subtitle_style(subtitle_style) == "word":
+        return word_by_word_segments(segments)
+    return compact_subtitle_segments(segments)
+
+
+def normalize_subtitle_style(value: str | None) -> str:
+    return "word" if str(value or "").strip().lower() in {"word", "word_by_word", "word-by-word"} else "standard"
+
+
+def _format_word_subtitle(word: str) -> str:
+    clean = word.strip()
+    if len(clean) <= _WORD_SUBTITLE_MAX_CHARS:
+        return clean
+    leading = re.match(r"^\W+", clean)
+    trailing = re.search(r"\W+$", clean)
+    prefix = leading.group(0) if leading else ""
+    suffix = trailing.group(0) if trailing else ""
+    core_start = len(prefix)
+    core_end = len(clean) - len(suffix) if suffix else len(clean)
+    core = clean[core_start:core_end]
+    if len(core) <= _WORD_SUBTITLE_MAX_CHARS:
+        return clean
+    split_at = _balanced_word_split(core)
+    return f"{prefix}{core[:split_at]}-\n{core[split_at:]}{suffix}"
+
+
+def _balanced_word_split(word: str) -> int:
+    midpoint = max(1, len(word) // 2)
+    candidates = [midpoint]
+    vowels = "aeiouáéíóúâêôãõàüAEIOUÁÉÍÓÚÂÊÔÃÕÀÜ"
+    for offset in range(0, max(1, len(word))):
+        for index in (midpoint - offset, midpoint + offset):
+            if 3 <= index <= len(word) - 3 and word[index - 1] in vowels:
+                candidates.append(index)
+    return min(candidates, key=lambda index: (abs(index - midpoint), index))
+
+
 def write_srt(segments: list[TranscriptSegment], output_path: str) -> str:
     lines = [
-        utils.text_to_srt(index, segment.text, segment.start, segment.end)
+        utils.text_to_srt(index, segment.text, segment.start, segment.end).strip()
         for index, segment in enumerate(segments, start=1)
     ]
     with open(output_path, "w", encoding="utf-8") as file:
-        file.write("\n".join(lines).strip() + "\n")
+        file.write("\n\n".join(lines).strip() + "\n")
     return output_path
 
 

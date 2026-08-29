@@ -7,9 +7,10 @@ import tempfile
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from urllib.parse import urlencode
 
 import requests
 from dotenv import load_dotenv
@@ -25,7 +26,6 @@ from app.utils import utils
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
-THUMBNAIL_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 I18N_LANGUAGES_URL = "https://www.googleapis.com/youtube/v3/i18nLanguages"
 I18N_REGIONS_URL = "https://www.googleapis.com/youtube/v3/i18nRegions"
@@ -165,12 +165,11 @@ def upload_clipper_output(
     title: str | None = None,
     description: str | None = None,
     tags: list[str] | None = None,
-    cover_url: str | None = None,
-    cover_key: str | None = None,
     privacy_status: str = "private",
+    publish_at: str | None = None,
     video_language: str = "pt-BR",
     audio_language: str = "pt-BR",
-    caption_language: str = "pt-BR",
+    category_id: str = "",
 ) -> dict[str, Any]:
     output = _find_clipper_output(job_id, output_id)
     _hydrate_output_metadata(job_id, output)
@@ -179,26 +178,25 @@ def upload_clipper_output(
 
     video_title = (title or output.get("title") or "Short criado pelo Flixo").strip()[:100]
     video_description = (description or _description_from_output(output, video_title)).strip()
-    status = privacy_status if privacy_status in {"private", "unlisted", "public"} else "private"
+    scheduled_at = _normalize_publish_at(publish_at)
+    status = _upload_privacy_status(privacy_status, scheduled_at)
     video_lang = _normalize_language(video_language)
     audio_lang = _normalize_language(audio_language)
-    caption_lang = _normalize_language(caption_language)
+    category = _normalize_category_id(category_id)
 
     access_token = _access_token()
     metadata = {
         "snippet": {
             "title": video_title,
             "description": video_description,
-            "categoryId": "22",
             "tags": _tags_for_upload(video_title, video_description, tags),
             "defaultLanguage": video_lang,
             "defaultAudioLanguage": audio_lang,
         },
-        "status": {
-            "privacyStatus": status,
-            "selfDeclaredMadeForKids": False,
-        },
+        "status": _video_status_payload(status, scheduled_at),
     }
+    if category:
+        metadata["snippet"]["categoryId"] = category
     upload_url = _create_resumable_upload(access_token, video_path, metadata)
     youtube_response = _upload_file(access_token, upload_url, video_path)
     video_id = youtube_response.get("id")
@@ -210,9 +208,10 @@ def upload_clipper_output(
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "title": video_title,
         "privacy_status": status,
+        "publish_at": scheduled_at,
         "video_language": video_lang,
         "audio_language": audio_lang,
-        "caption_language": caption_lang,
+        "category_id": category,
     }
 
 
@@ -222,12 +221,11 @@ def upload_podcast_output(
     title: str | None = None,
     description: str | None = None,
     tags: list[str] | None = None,
-    cover_url: str | None = None,
-    cover_key: str | None = None,
     privacy_status: str = "private",
+    publish_at: str | None = None,
     video_language: str = "pt-BR",
     audio_language: str = "pt-BR",
-    caption_language: str = "pt-BR",
+    category_id: str = "",
 ) -> dict[str, Any]:
     output = _find_podcast_output(job_id, output_id)
     _hydrate_podcast_output_metadata(job_id, output)
@@ -236,15 +234,15 @@ def upload_podcast_output(
         video_title=(title or output.get("title") or "Podcast short criado pelo Flixo").strip()[:100],
         video_description=(description or _description_from_output(output, title or output.get("title") or "podcast")).strip(),
         tags=tags,
-        cover_url=cover_url,
-        cover_key=cover_key,
         privacy_status=privacy_status,
+        publish_at=publish_at,
         video_language=video_language,
         audio_language=audio_language,
-        caption_language=caption_language,
+        category_id=category_id,
         task_root="podcast",
     )
     result["output_id"] = output_id
+    _mark_podcast_job_uploaded(job_id, [result])
     return result
 
 
@@ -253,37 +251,37 @@ def _upload_output(
     video_title: str,
     video_description: str,
     tags: list[str] | None,
-    cover_url: str | None,
-    cover_key: str | None,
     privacy_status: str,
+    publish_at: str | None,
     video_language: str,
     audio_language: str,
-    caption_language: str,
+    category_id: str,
     task_root: str,
 ) -> dict[str, Any]:
     video_path = Path(str(output.get("video_path", ""))).resolve()
     _validate_video_path(video_path, task_root)
 
-    status = privacy_status if privacy_status in {"private", "unlisted", "public"} else "private"
+    video_title = _clean_upload_title(video_title)
+    video_description = _clean_upload_description(video_description, video_title)
+    scheduled_at = _normalize_publish_at(publish_at)
+    status = _upload_privacy_status(privacy_status, scheduled_at)
     video_lang = _normalize_language(video_language)
     audio_lang = _normalize_language(audio_language)
-    caption_lang = _normalize_language(caption_language)
+    category = _normalize_category_id(category_id)
 
     access_token = _access_token()
     metadata = {
         "snippet": {
             "title": video_title,
             "description": video_description,
-            "categoryId": "22",
             "tags": _tags_for_upload(video_title, video_description, tags),
             "defaultLanguage": video_lang,
             "defaultAudioLanguage": audio_lang,
         },
-        "status": {
-            "privacyStatus": status,
-            "selfDeclaredMadeForKids": False,
-        },
+        "status": _video_status_payload(status, scheduled_at),
     }
+    if category:
+        metadata["snippet"]["categoryId"] = category
     upload_url = _create_resumable_upload(access_token, video_path, metadata)
     youtube_response = _upload_file(access_token, upload_url, video_path)
     video_id = youtube_response.get("id")
@@ -295,9 +293,10 @@ def _upload_output(
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "title": video_title,
         "privacy_status": status,
+        "publish_at": scheduled_at,
         "video_language": video_lang,
         "audio_language": audio_lang,
-        "caption_language": caption_lang,
+        "category_id": category,
     }
 
 
@@ -308,7 +307,7 @@ def upload_clipper_job(
     cleanup_after_upload: bool = True,
     video_language: str = "pt-BR",
     audio_language: str = "pt-BR",
-    caption_language: str = "pt-BR",
+    category_id: str = "",
 ) -> dict[str, Any]:
     outputs = _clipper_outputs(job_id)
     if not outputs:
@@ -328,12 +327,11 @@ def upload_clipper_job(
                 title=_optional_str(custom.get("title")),
                 description=_optional_str(custom.get("description")),
                 tags=_normalize_tags(custom.get("tags")),
-                cover_url=_optional_str(custom.get("cover_url")),
-                cover_key=_optional_str(custom.get("cover_key")),
-                privacy_status=privacy_status,
+                privacy_status=_optional_str(custom.get("privacy_status")) or privacy_status,
+                publish_at=_optional_str(custom.get("publish_at")),
                 video_language=video_language,
                 audio_language=audio_language,
-                caption_language=caption_language,
+                category_id=_optional_str(custom.get("category_id")) or category_id,
             )
         )
 
@@ -356,7 +354,7 @@ def upload_podcast_job(
     cleanup_after_upload: bool = True,
     video_language: str = "pt-BR",
     audio_language: str = "pt-BR",
-    caption_language: str = "pt-BR",
+    category_id: str = "",
 ) -> dict[str, Any]:
     outputs = _podcast_outputs(job_id)
     if not outputs:
@@ -376,12 +374,11 @@ def upload_podcast_job(
                 title=_optional_str(custom.get("title")),
                 description=_optional_str(custom.get("description")),
                 tags=_normalize_tags(custom.get("tags")),
-                cover_url=_optional_str(custom.get("cover_url")),
-                cover_key=_optional_str(custom.get("cover_key")),
-                privacy_status=privacy_status,
+                privacy_status=_optional_str(custom.get("privacy_status")) or privacy_status,
+                publish_at=_optional_str(custom.get("publish_at")),
                 video_language=video_language,
                 audio_language=audio_language,
-                caption_language=caption_language,
+                category_id=_optional_str(custom.get("category_id")) or category_id,
             )
         )
 
@@ -420,6 +417,8 @@ def _mark_podcast_job_uploaded(job_id: str, uploads: list[dict[str, Any]]) -> No
             output["youtube_uploaded_at"] = int(time.time())
             output["youtube_video_id"] = upload.get("video_id")
             output["youtube_url"] = upload.get("url")
+            output["youtube_publish_at"] = upload.get("publish_at")
+            output["youtube_privacy_status"] = upload.get("privacy_status")
             output["history_status"] = "uploaded"
             output["archive_compression_status"] = "queued"
 
@@ -519,6 +518,7 @@ def update_video_metadata(
     tags: list[str] | None = None,
     video_language: str = "pt-BR",
     audio_language: str = "pt-BR",
+    category_id: str = "",
 ) -> dict[str, Any]:
     access_token = _access_token()
     metadata = {
@@ -526,7 +526,6 @@ def update_video_metadata(
         "snippet": {
             "title": title.strip()[:100],
             "description": description.strip(),
-            "categoryId": "22",
             "tags": _tags_for_upload(title, description, tags),
             "defaultLanguage": _normalize_language(video_language),
             "defaultAudioLanguage": _normalize_language(audio_language),
@@ -536,6 +535,9 @@ def update_video_metadata(
             "selfDeclaredMadeForKids": False,
         },
     }
+    category = _normalize_category_id(category_id)
+    if category:
+        metadata["snippet"]["categoryId"] = category
     response = requests.put(
         "https://www.googleapis.com/youtube/v3/videos?part=snippet,status",
         headers={
@@ -558,6 +560,63 @@ def _normalize_language(value: str | None, fallback: str = "pt-BR") -> str:
         normalized.extend(part.upper() if len(part) == 2 else part for part in parts[1:])
         return "-".join(normalized)
     return fallback
+
+
+def _normalize_category_id(value: str | None, fallback: str = "") -> str:
+    category = str(value or "").strip()
+    if not category:
+        return fallback
+    allowed = {
+        "1",
+        "2",
+        "10",
+        "15",
+        "17",
+        "19",
+        "20",
+        "22",
+        "23",
+        "24",
+        "25",
+        "26",
+        "27",
+        "28",
+        "29",
+    }
+    return category if category in allowed else fallback
+
+
+def _normalize_publish_at(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        scheduled_at = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise RuntimeError("Data de agendamento invalida.") from exc
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    scheduled_at = scheduled_at.astimezone(timezone.utc)
+    if scheduled_at <= datetime.now(timezone.utc) + timedelta(minutes=1):
+        raise RuntimeError("Escolha um horario de publicacao futuro.")
+    return scheduled_at.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _upload_privacy_status(privacy_status: str, publish_at: str | None = None) -> str:
+    if publish_at:
+        return "private"
+    return privacy_status if privacy_status in {"private", "unlisted", "public"} else "private"
+
+
+def _video_status_payload(privacy_status: str, publish_at: str | None = None) -> dict[str, Any]:
+    status = {
+        "privacyStatus": privacy_status,
+        "selfDeclaredMadeForKids": False,
+    }
+    if publish_at:
+        status["publishAt"] = publish_at
+    return status
 
 
 def _credentials() -> YouTubeCredentials:
@@ -597,20 +656,21 @@ def _default_tags(title: str, description: str) -> list[str]:
     text = _tag_text(title, description)
     tags: list[str] = []
     _append_matching_tags(text, tags)
-    if len(tags) < 6:
+    if len(tags) < 12:
         tags.extend(_fallback_keyword_tags(text))
-    return list(dict.fromkeys(tags))[:15]
+    return list(dict.fromkeys(tag for tag in tags if not _is_low_quality_tag(tag)))[:12]
 
 
 def _tags_for_upload(title: str, description: str, value: Any) -> list[str]:
     tags = _normalize_tags(value)
-    suggested = _default_tags(title, description)
+    tags = [tag for tag in tags if not _is_low_quality_tag(tag)]
+    suggested = [tag for tag in _default_tags(title, description) if not _is_low_quality_tag(tag)]
     existing = {tag.lower() for tag in tags}
     for tag in suggested:
         if tag.lower() not in existing:
             tags.append(tag)
             existing.add(tag.lower())
-    return tags[:15]
+    return tags[:12]
 
 
 def _normalize_tags(value: Any) -> list[str]:
@@ -628,7 +688,49 @@ def _normalize_tags(value: Any) -> list[str]:
         if not clean:
             continue
         tags.append(clean[:60])
-    return list(dict.fromkeys(tags))[:15]
+    return list(dict.fromkeys(tags))
+
+
+def _clean_upload_title(value: str) -> str:
+    title = re.sub(r"\s+", " ", str(value or "").strip())
+    title = re.sub(r"\s*\(editado\)\s*$", "", title, flags=re.IGNORECASE).strip()
+    return title[:100] or "Short"
+
+
+def _clean_upload_description(value: str, title: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    text = re.sub(r"\s+#\w+", "", text).strip()
+    if not text or _looks_editorial(text):
+        return f"Um corte curto sobre {title.lower()}."
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    compact = " ".join(sentence for sentence in sentences[:2] if sentence).strip()
+    return compact[:5000] or f"Um corte curto sobre {title.lower()}."
+
+
+def _is_low_quality_tag(value: str) -> bool:
+    normalized = _tag_text(value)
+    compact = normalized.replace(" ", "")
+    allowed_short = {"v8", "nsx", "jdm"}
+    blocked = {
+        "shorts",
+        "podcast",
+        "youtubeshorts",
+        "youtube",
+        "editado",
+        "culminando",
+        "ridicularizado",
+        "guardadas",
+        "frescor",
+        "combinacao",
+        "dedicacao",
+        "fundamental",
+        "petrolifera",
+        "temporada",
+        "tecnico",
+        "desenvolvimento",
+        "investimentos",
+    }
+    return compact in blocked or (len(compact) < 3 and compact not in allowed_short)
 
 
 def _tag_text(*values: str) -> str:
@@ -1054,148 +1156,6 @@ def _upload_file(access_token: str, upload_url: str, video_path: Path) -> dict[s
     if response.status_code >= 400:
         raise RuntimeError(_google_error(response, "Falha ao enviar video ao YouTube."))
     return response.json()
-
-
-def _try_upload_thumbnail(
-    access_token: str,
-    video_id: str,
-    cover_url: str | None,
-    cover_key: str | None = None,
-) -> tuple[dict[str, Any] | None, str]:
-    try:
-        return _upload_thumbnail(access_token, video_id, cover_url, cover_key), ""
-    except RuntimeError as exc:
-        return None, str(exc)
-
-
-def _upload_thumbnail(
-    access_token: str,
-    video_id: str,
-    cover_url: str | None,
-    cover_key: str | None = None,
-) -> dict[str, Any] | None:
-    resolved_key = _safe_r2_key(cover_key) or _cover_key_from_asset_url(cover_url)
-    thumbnail_path = (
-        _thumbnail_path_from_key(resolved_key)
-        or _download_thumbnail_from_key(resolved_key)
-        or _thumbnail_path_from_url(cover_url)
-        or _download_thumbnail_from_url(cover_url)
-    )
-    if not thumbnail_path:
-        raise RuntimeError("Video enviado, mas a miniatura selecionada nao foi encontrada para envio.")
-    temporary = Path(tempfile.gettempdir()).resolve() in thumbnail_path.resolve().parents
-    try:
-        mime_type = mimetypes.guess_type(thumbnail_path.name)[0] or "image/jpeg"
-        with thumbnail_path.open("rb") as file:
-            response = requests.post(
-                THUMBNAIL_UPLOAD_URL,
-                params={"videoId": video_id},
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": mime_type,
-                    "Content-Length": str(thumbnail_path.stat().st_size),
-                },
-                data=file,
-                timeout=120,
-            )
-        if response.status_code >= 400:
-            raise RuntimeError(_google_error(response, "Video enviado, mas falhou ao aplicar capa."))
-        payload = response.json()
-        thumbnails = {}
-        for item in payload.get("items", []):
-            if isinstance(item, dict):
-                thumbnails.update(item)
-        return {
-            "etag": str(payload.get("etag") or ""),
-            "thumbnails": thumbnails,
-        }
-    finally:
-        if temporary:
-            thumbnail_path.unlink(missing_ok=True)
-
-
-def _cover_key_from_asset_url(cover_url: str | None) -> str | None:
-    value = str(cover_url or "").strip()
-    if not value:
-        return None
-    parsed = urlparse(value)
-    if parsed.path != "/api/assets":
-        return None
-    key = parse_qs(parsed.query).get("key", [""])[0]
-    return _safe_r2_key(unquote(key))
-
-
-def _safe_r2_key(value: str | None) -> str | None:
-    key = str(value or "").strip()
-    if not key or key.startswith("/") or "\\" in key or ".." in key:
-        return None
-    if not key.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-        return None
-    return key
-
-
-def _thumbnail_path_from_key(key: str | None) -> Path | None:
-    if not key:
-        return None
-    tasks_root = (Path(utils.root_dir()).resolve() / "storage" / "tasks").resolve()
-    path = (tasks_root / key).resolve()
-    if path.is_file() and path.is_relative_to(tasks_root):
-        return path
-    return None
-
-
-def _download_thumbnail_from_key(key: str | None) -> Path | None:
-    if not key:
-        return None
-    suffix = Path(key).suffix.lower()
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
-        suffix = ".jpg"
-    fd, path = tempfile.mkstemp(prefix="flixo-youtube-cover-", suffix=suffix)
-    os.close(fd)
-    target = Path(path)
-    if r2_storage.download_to_file(key, target):
-        return target
-    target.unlink(missing_ok=True)
-    return None
-
-
-def _thumbnail_path_from_url(cover_url: str | None) -> Path | None:
-    value = str(cover_url or "").strip()
-    if not value:
-        return None
-    if value.startswith("http://") or value.startswith("https://"):
-        return None
-    root = Path(utils.root_dir()).resolve()
-    tasks_root = (root / "storage" / "tasks").resolve()
-    if value.startswith("/tasks/"):
-        path = (tasks_root / value.removeprefix("/tasks/")).resolve()
-    else:
-        path = Path(value).resolve()
-    if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
-        return None
-    if not path.is_relative_to(tasks_root):
-        raise RuntimeError("Caminho de capa fora da pasta de tasks.")
-    return path
-
-
-def _download_thumbnail_from_url(cover_url: str | None) -> Path | None:
-    value = str(cover_url or "").strip()
-    if not (value.startswith("http://") or value.startswith("https://")):
-        return None
-    response = requests.get(value, timeout=60)
-    if response.status_code >= 400:
-        raise RuntimeError(f"Video enviado, mas nao foi possivel baixar a capa selecionada ({response.status_code}).")
-    content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-    if content_type and content_type not in {"image/jpeg", "image/png", "image/webp"}:
-        raise RuntimeError("Video enviado, mas a capa selecionada nao parece ser uma imagem valida.")
-    suffix = {
-        "image/png": ".png",
-        "image/webp": ".webp",
-    }.get(content_type, ".jpg")
-    fd, path = tempfile.mkstemp(prefix="flixo-youtube-cover-", suffix=suffix)
-    with os.fdopen(fd, "wb") as file:
-        file.write(response.content)
-    return Path(path)
 
 
 def _find_clipper_output(job_id: str, output_id: str) -> dict[str, Any]:

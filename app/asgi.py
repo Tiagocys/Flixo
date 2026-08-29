@@ -74,6 +74,19 @@ def get_application() -> FastAPI:
 
 app = get_application()
 
+
+@app.middleware("http")
+async def moneyprinter_api_token_middleware(request: Request, call_next):
+    expected_token = os.getenv("MONEYPRINTER_API_TOKEN", "").strip()
+    if expected_token and request.url.path.startswith("/api/v1/"):
+        authorization = request.headers.get("authorization", "")
+        if authorization != f"Bearer {expected_token}":
+            return JSONResponse(
+                status_code=401,
+                content=utils.get_response(401, {}, "backend token invalido"),
+            )
+    return await call_next(request)
+
 # Configures the CORS middleware for the FastAPI app
 cors_allowed_origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "")
 origins = cors_allowed_origins_str.split(",") if cors_allowed_origins_str else ["*"]

@@ -4,6 +4,17 @@ const state = {
   timer: null,
   historyCount: 0,
   deletingHistoryJobs: new Set(),
+  expandedOutputs: new Set(),
+  outputTabs: new Map(),
+  timelineProjects: new Map(),
+  timelineSelections: new Map(),
+  timelineUndoStacks: new Map(),
+  activeTimelineOutputId: null,
+  suppressTimelineClickUntil: 0,
+  lastTimelineSplit: null,
+  candidateRenderToken: 0,
+  outputRenderToken: 0,
+  uiBusyCount: 0,
   actionLocked: false,
   renderSelectionLocked: false,
   youtubeAuthorized: false,
@@ -26,6 +37,7 @@ const els = {
   error: document.getElementById("podcast-error"),
   candidatesMeta: document.getElementById("podcast-candidates-meta"),
   candidates: document.getElementById("podcast-candidates"),
+  candidateSubtitleSettings: document.getElementById("podcast-candidate-subtitle-settings"),
   selectAllCandidates: document.getElementById("podcast-select-all-candidates"),
   renderButton: document.getElementById("podcast-render-button"),
   outputsMeta: document.getElementById("podcast-outputs-meta"),
@@ -34,9 +46,10 @@ const els = {
   youtubeConnectButton: document.getElementById("podcast-youtube-connect-button"),
   youtubeUploadAllButton: document.getElementById("podcast-youtube-upload-all-button"),
   downloadThumbnailsButton: document.getElementById("podcast-download-thumbnails-button"),
+  downloadSubtitlesButton: document.getElementById("podcast-download-subtitles-button"),
   youtubePrivacy: document.getElementById("podcast-youtube-privacy"),
   youtubeVideoLanguage: document.getElementById("podcast-youtube-video-language"),
-  youtubeCaptionLanguage: document.getElementById("podcast-youtube-caption-language"),
+  youtubeCategory: document.getElementById("podcast-youtube-category"),
   removeSilence: document.getElementById("podcast-remove-silence"),
   artificialCuts: document.getElementById("podcast-artificial-cuts"),
   burnSubtitles: document.getElementById("podcast-burn-subtitles"),
@@ -54,14 +67,22 @@ const els = {
 
 const STAGE_ORDER = ["ingesting", "transcribing", "analyzing", "ready", "rendering"];
 
+const OUTPUT_TABS = [
+  ["metadata", "Metadados"],
+  ["cover", "Miniatura"],
+  ["subtitle", "Legenda"],
+  ["edit", "Edição de vídeo"],
+  ["upload", "Envio"],
+];
+
 const STAGE_MESSAGES = {
   queued: "Projeto recebido. Vamos preparar o vídeo para análise.",
   ingesting: "Preparando o vídeo e extraindo informações básicas.",
   transcribing: "Transcrevendo as falas. Esta etapa varia conforme o tamanho do vídeo.",
   analyzing: "A IA está entendendo o contexto e procurando os melhores momentos.",
-  ready: "Cortes sugeridos prontos. Selecione os trechos que deseja transformar em shorts.",
-  rendering: "Renderizando os shorts selecionados com cortes, câmera e legenda.",
-  done: "Shorts editáveis prontos.",
+  ready: "Cortes sugeridos prontos. Selecione os trechos que deseja transformar em cortes.",
+  rendering: "Renderizando os cortes selecionados com câmera e legenda.",
+  done: "Cortes editáveis prontos.",
 };
 
 const COVER_TEMPLATE_OPTIONS = [
@@ -78,10 +99,96 @@ const COVER_TEXT_POSITION_OPTIONS = [
   ["bottom", "Embaixo"],
 ];
 
+const SUBTITLE_COLOR_PRESETS = [
+  { text: "white", border: "black", label: "Branca com borda preta" },
+  { text: "yellow", border: "black", label: "Amarela com borda preta" },
+  { text: "blue", border: "black", label: "Azul com borda preta" },
+  { text: "red", border: "black", label: "Vermelha com borda preta" },
+];
+
+const SUBTITLE_STYLE_OPTIONS = [
+  ["standard", "Blocos no rodapé"],
+  ["word", "Uma palavra por vez"],
+];
+
+const SUBTITLE_SIZE_OPTIONS = [
+  ["small", "Menor"],
+  ["medium", "Média"],
+  ["large", "Maior"],
+];
+
+const SUBTITLE_POSITION_OPTIONS = [
+  ["top", "Topo"],
+  ["middle", "Centro"],
+  ["bottom", "Baixo"],
+];
+
+const CLIP_FORMAT_OPTIONS = [
+  {
+    value: "auto",
+    label: "Automático",
+    ratio: "Auto",
+    hint: "IA decide",
+    icon: "",
+  },
+  {
+    value: "vertical",
+    label: "Retrato",
+    ratio: "9:16",
+    hint: "Celular em pé",
+    icon: "/assets/retrato.svg",
+  },
+  {
+    value: "square",
+    label: "Quadrado",
+    ratio: "1:1",
+    hint: "Feed quadrado",
+    icon: "/assets/square.svg",
+  },
+  {
+    value: "landscape",
+    label: "Paisagem",
+    ratio: "16:9",
+    hint: "Celular deitado",
+    icon: "/assets/paisagem.svg",
+  },
+];
+
+const GLOBAL_SUBTITLE_PREVIEW_ID = "__global_subtitle__";
+
+const YOUTUBE_CATEGORY_OPTIONS = [
+  ["", "Nenhum"],
+  ["15", "Animais"],
+  ["2", "Automóveis"],
+  ["28", "Ciência e tecnologia"],
+  ["23", "Comédia"],
+  ["27", "Educação"],
+  ["24", "Entretenimento"],
+  ["17", "Esportes"],
+  ["1", "Filme e animação"],
+  ["26", "Instruções e estilo"],
+  ["20", "Jogos"],
+  ["10", "Música"],
+  ["25", "Notícias e política"],
+  ["22", "Pessoas e blogs"],
+  ["29", "Sem fins lucrativos e ativismo"],
+  ["19", "Viagens e eventos"],
+];
+
 function hasActiveProject(job) {
   if (!job) return false;
   if (isInterruptedJob(job)) return false;
   return ["queued", "running", "ready", "rendering", "done"].includes(String(job.status || ""));
+}
+
+function isProcessingProject(job) {
+  if (!job || isInterruptedJob(job)) return false;
+  const status = String(job.status || "");
+  const step = String(job.current_step || "");
+  return (
+    ["queued", "running", "rendering"].includes(status) ||
+    ["queued", "ingesting", "transcribing", "analyzing", "rendering"].includes(step)
+  );
 }
 
 function escapeHtml(value) {
@@ -91,6 +198,66 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function setUiBusy(busy) {
+  state.uiBusyCount = Math.max(0, state.uiBusyCount + (busy ? 1 : -1));
+  document.body.classList.toggle("clipper-ui-busy", state.uiBusyCount > 0);
+}
+
+function afterNextPaint(callback) {
+  const frame = typeof window.requestAnimationFrame === "function"
+    ? window.requestAnimationFrame.bind(window)
+    : (handler) => window.setTimeout(handler, 0);
+  frame(() => frame(callback));
+}
+
+function runAfterLoaderPaint(callback) {
+  setUiBusy(true);
+  afterNextPaint(() => {
+    try {
+      callback();
+    } finally {
+      setUiBusy(false);
+    }
+  });
+}
+
+function cancelPendingUiRenders() {
+  state.candidateRenderToken += 1;
+  state.outputRenderToken += 1;
+  state.uiBusyCount = 0;
+  document.body.classList.remove("clipper-ui-busy");
+  if (els.candidates) delete els.candidates.dataset.renderKey;
+  if (els.outputs) delete els.outputs.dataset.renderKey;
+}
+
+function datetimeLocalValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return localDate.toISOString().slice(0, 16);
+}
+
+function minimumPublishAtLocalValue() {
+  const date = new Date(Date.now() + 5 * 60 * 1000);
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return localDate.toISOString().slice(0, 16);
+}
+
+function publishAtIsoValue(outputId) {
+  const input = els.outputs.querySelector(`[data-youtube-publish-at="${CSS.escape(outputId)}"]`);
+  const value = input?.value?.trim() || "";
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Horario de publicacao invalido.");
+  }
+  if (date.getTime() <= Date.now() + 60 * 1000) {
+    throw new Error("Escolha um horario de publicacao futuro.");
+  }
+  return date.toISOString();
 }
 
 function confirmAction({ title, message, confirmLabel = "Confirmar", cancelLabel = "Cancelar" }) {
@@ -238,7 +405,7 @@ function syncProjectPanels(job = state.job) {
   const outputs = Array.isArray(job?.outputs) ? job.outputs : [];
   const hasOutputs = outputs.length > 0;
   const hasCandidates = !hasOutputs && (candidates.length > 0 || job?.status === "ready");
-  const hasHistory = state.historyCount > 0;
+  const hasHistory = state.historyCount > 0 || isProcessingProject(job);
 
   if (els.form) els.form.hidden = hasActiveProject(job);
   if (els.candidatesPanel) els.candidatesPanel.hidden = !hasCandidates;
@@ -257,7 +424,7 @@ function setProgress(job) {
   els.statusMeta.textContent = statusMessage(job);
   if (els.cancelButton) {
     const canCancel = state.renderSelectionLocked || ["queued", "running", "rendering"].includes(job?.status);
-    const canCreateNew = job?.status === "done";
+    const canCreateNew = ["ready", "done"].includes(String(job?.status || ""));
     els.cancelButton.hidden = !canCancel && !canCreateNew;
     els.cancelButton.disabled = false;
     els.cancelButton.dataset.statusAction = canCreateNew ? "new-project" : "cancel";
@@ -278,6 +445,13 @@ function resetClipperForNewProject(message = "Pronto para criar um novo projeto.
   state.timer = null;
   state.jobId = null;
   state.job = null;
+  state.expandedOutputs.clear();
+  state.outputTabs.clear();
+  state.timelineProjects.clear();
+  state.timelineSelections.clear();
+  state.timelineUndoStacks.clear();
+  state.activeTimelineOutputId = null;
+  cancelPendingUiRenders();
   state.renderSelectionLocked = false;
   state.actionLocked = false;
   localStorage.removeItem(PODCAST_LAST_JOB_KEY);
@@ -294,17 +468,23 @@ function resetClipperForNewProject(message = "Pronto para criar um novo projeto.
     els.cancelButton.classList.add("danger-button");
     els.cancelButton.textContent = "Interromper processo";
   }
+  loadHistory().catch(() => {});
 }
 
 function actionLockControls() {
   const selectors = [
+    ".clipper-candidates-panel button",
+    ".clipper-candidates-panel input",
+    ".clipper-candidates-panel select",
     ".clipper-outputs-panel button",
     ".clipper-outputs-panel input",
     ".clipper-outputs-panel textarea",
     ".clipper-outputs-panel select",
     ".clipper-history-panel button",
   ];
-  return [...document.querySelectorAll(selectors.join(","))];
+  return [...document.querySelectorAll(selectors.join(","))].filter(
+    (control) => !control.closest(".nle-editor-shell"),
+  );
 }
 
 function actionLockLinks() {
@@ -340,8 +520,140 @@ function syncActionLockControls() {
   if (state.actionLocked) setActionLocked(true);
 }
 
+function candidateSubtitleSettingsElement() {
+  if (!els.candidateSubtitleSettings && els.candidatesPanel && els.candidates) {
+    const container = document.createElement("div");
+    container.id = "podcast-candidate-subtitle-settings";
+    els.candidatesPanel.insertBefore(container, els.candidates);
+    els.candidateSubtitleSettings = container;
+  }
+  if (els.candidateSubtitleSettings && els.candidateSubtitleSettings.dataset.bound !== "true") {
+    els.candidateSubtitleSettings.addEventListener("click", handleSubtitlePreviewClick);
+    els.candidateSubtitleSettings.dataset.bound = "true";
+  }
+  return els.candidateSubtitleSettings;
+}
+
+function shouldShowCandidateSubtitleSettings(job, candidates) {
+  return Array.isArray(candidates) && candidates.length > 0 && job?.status === "ready" && !isCandidateSelectionLocked(job);
+}
+
+function hideCandidateSubtitleSettings() {
+  const subtitleSettings = candidateSubtitleSettingsElement();
+  if (!subtitleSettings) return;
+  subtitleSettings.hidden = true;
+}
+
 function renderCandidates(job) {
   const candidates = Array.isArray(job?.candidates) ? job.candidates : [];
+  if (!candidates.length) {
+    state.candidateRenderToken += 1;
+    if (els.candidates) delete els.candidates.dataset.renderKey;
+    renderCandidatesNow(job);
+    return;
+  }
+
+  const renderKey = candidateRenderKey(job, candidates);
+  if (els.candidates?.dataset.renderKey === renderKey) {
+    syncCandidateSelectionState(job);
+    updateGlobalSubtitlePreviewCandidate();
+    return;
+  }
+
+  const token = ++state.candidateRenderToken;
+  showCandidateRenderLoader(job, candidates);
+  runAfterLoaderPaint(() => {
+    if (token !== state.candidateRenderToken) return;
+    if (job?.id && state.job?.id && job.id !== state.job.id) return;
+    renderCandidatesNow(job);
+    if (els.candidates) els.candidates.dataset.renderKey = renderKey;
+  });
+}
+
+function candidateRenderKey(job, candidates) {
+  return [
+    job?.id || "",
+    job?.status || "",
+    job?.current_step || "",
+    isCandidateSelectionLocked(job) ? "locked" : "editable",
+    candidates
+      .map((candidate) => [
+        candidate?.id,
+        candidate?.start,
+        candidate?.end,
+        candidate?.title,
+        candidate?.hook,
+        candidate?.preview_frame_url || candidate?.preview_frame_path || "",
+      ].join(":"))
+      .join("|"),
+  ].join("::");
+}
+
+function candidateSkeletonHtml(count = 4) {
+  const total = Math.min(Math.max(Number(count || 4), 2), 8);
+  return `
+    <div class="clipper-ui-loader">
+      <span class="clipper-loader-spinner" aria-hidden="true"></span>
+      <strong>Preparando cortes sugeridos</strong>
+    </div>
+    <div class="clipper-candidate-list is-loading-list" aria-hidden="true">
+      ${Array.from({ length: total }).map(() => `
+        <div class="clipper-candidate-card clipper-skeleton-card">
+          <span class="clipper-skeleton-check"></span>
+          <div class="clipper-candidate-body">
+            <span class="clipper-skeleton-line is-title"></span>
+            <span class="clipper-skeleton-line is-short"></span>
+            <span class="clipper-skeleton-line"></span>
+            <span class="clipper-skeleton-line is-mid"></span>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function candidateSettingsSkeletonHtml() {
+  return `
+    <section class="candidate-subtitle-settings">
+      <div class="candidate-render-settings">
+        <span class="candidate-render-title">Formato do corte</span>
+        <div class="clip-format-options" aria-hidden="true">
+          ${Array.from({ length: 4 }).map(() => '<span class="clip-format-option clipper-skeleton-format"></span>').join("")}
+        </div>
+      </div>
+      <div class="subtitle-color-preview clipper-skeleton-preview" aria-hidden="true"></div>
+    </section>
+  `;
+}
+
+function showCandidateRenderLoader(job, candidates) {
+  const subtitleSettings = candidateSubtitleSettingsElement();
+  if (els.candidatesMeta) {
+    els.candidatesMeta.textContent = "Montando cortes sugeridos...";
+  }
+  if (els.renderButton) {
+    els.renderButton.disabled = true;
+    els.renderButton.textContent = "Preparando...";
+  }
+  if (els.selectAllCandidates) {
+    els.selectAllCandidates.disabled = true;
+    els.selectAllCandidates.checked = false;
+    els.selectAllCandidates.indeterminate = false;
+  }
+  if (subtitleSettings) {
+    const showSubtitleSettings = shouldShowCandidateSubtitleSettings(job, candidates);
+    subtitleSettings.hidden = !showSubtitleSettings;
+    subtitleSettings.innerHTML = showSubtitleSettings ? candidateSettingsSkeletonHtml() : "";
+  }
+  if (els.candidates) {
+    delete els.candidates.dataset.renderKey;
+    els.candidates.innerHTML = candidateSkeletonHtml(candidates.length);
+  }
+}
+
+function renderCandidatesNow(job) {
+  const candidates = Array.isArray(job?.candidates) ? job.candidates : [];
+  const subtitleSettings = candidateSubtitleSettingsElement();
   if (!candidates.length) {
     if (job?.status === "ready") {
       els.candidatesMeta.textContent = "Nenhum corte narrativo foi encontrado.";
@@ -352,13 +664,17 @@ function renderCandidates(job) {
       els.candidates.innerHTML = '<div class="empty-state">Os candidatos aparecerão aqui.</div>';
     }
     els.renderButton.disabled = true;
+    if (subtitleSettings) {
+      subtitleSettings.innerHTML = "";
+      subtitleSettings.hidden = true;
+    }
     syncSelectAllCandidates(job);
     return;
   }
 
   els.candidatesMeta.textContent = `${candidates.length} cortes sugeridos. Selecione os melhores.`;
   const selectionLocked = isCandidateSelectionLocked(job);
-  els.candidates.innerHTML = candidates
+  const cards = candidates
     .map((candidate, index) => {
       const score = candidate?.scores?.overall ?? 0;
       return `
@@ -377,13 +693,109 @@ function renderCandidates(job) {
       `;
     })
     .join("");
+  if (subtitleSettings) {
+    const showSubtitleSettings = shouldShowCandidateSubtitleSettings(job, candidates);
+    subtitleSettings.hidden = !showSubtitleSettings;
+    subtitleSettings.innerHTML = showSubtitleSettings ? candidateSubtitleSettingsHtml(candidates) : "";
+  }
+  els.candidates.innerHTML = `<div class="clipper-candidate-list">${cards}</div>`;
   syncCandidateSelectionState(job);
+}
+
+function candidateSubtitleSettingsHtml(candidates) {
+  const candidate = globalSubtitlePreviewCandidate(candidates);
+  const previewOutput = {
+    id: GLOBAL_SUBTITLE_PREVIEW_ID,
+    subtitle_style: "standard",
+    subtitle_text_color: "white",
+    subtitle_border_color: "black",
+    subtitle_size: "medium",
+    subtitle_position: "bottom",
+    subtitle_preview_text: candidateSubtitlePreviewText(candidate),
+    subtitle_preview_title: "Legenda padrão dos cortes",
+    subtitle_preview_hint: "Aplicada aos clipes selecionados na renderização",
+  };
+  return `
+    <section class="candidate-subtitle-settings">
+      <div class="candidate-render-settings">
+        <span class="candidate-render-title">Formato do corte</span>
+        <div id="podcast-candidate-clip-format" class="clip-format-options" role="radiogroup" aria-label="Formato do corte">
+          ${clipFormatOptionsHtml("auto")}
+        </div>
+      </div>
+      ${subtitleColorPreviewHtml(previewOutput, candidatePreviewFrameUrl(candidate))}
+    </section>
+  `;
+}
+
+function clipFormatOptionsHtml(selectedValue = "auto") {
+  return CLIP_FORMAT_OPTIONS.map((option) => {
+    const checked = option.value === selectedValue ? " checked" : "";
+    const iconHtml = option.icon
+      ? `<img src="${escapeHtml(option.icon)}" alt="" loading="lazy" />`
+      : `<span class="clip-format-auto-icon">Auto</span>`;
+    return `
+      <label class="clip-format-option">
+        <input type="radio" name="podcast-candidate-clip-format" value="${escapeHtml(option.value)}"${checked} />
+        <span class="clip-format-icon">${iconHtml}</span>
+        <span class="clip-format-copy">
+          <strong>${escapeHtml(option.ratio)}</strong>
+          <small>${escapeHtml(option.label)}</small>
+          <em>${escapeHtml(option.hint)}</em>
+        </span>
+      </label>
+    `;
+  }).join("");
+}
+
+function globalSubtitlePreviewCandidate(candidates = state.job?.candidates || []) {
+  const selected = new Set(selectedCandidateIds());
+  return (
+    candidates.find((candidate) => selected.has(String(candidate?.id || ""))) ||
+    candidates.find((candidate) => candidate?.preview_frame_url || candidate?.preview_frame_path) ||
+    candidates[0] ||
+    null
+  );
+}
+
+function candidatePreviewFrameUrl(candidate) {
+  return cacheBustedUrl(candidate?.preview_frame_url || candidate?.preview_frame || "", state.job?.updated_at);
+}
+
+function candidateSubtitlePreviewText(candidate) {
+  return String(candidate?.hook || candidate?.title || "você tem que sair cedo").trim();
+}
+
+function updateGlobalSubtitlePreviewCandidate() {
+  const group = document.querySelector(`[data-subtitle-style-group="${CSS.escape(GLOBAL_SUBTITLE_PREVIEW_ID)}"]`);
+  if (!group) return;
+  const candidate = globalSubtitlePreviewCandidate();
+  const frameUrl = candidatePreviewFrameUrl(candidate);
+  const previewText = candidateSubtitlePreviewText(candidate);
+  group.dataset.subtitlePreviewText = previewText;
+  const style = normalizeSubtitleStyleValue(group.dataset.subtitleStyle || "standard");
+  group.querySelectorAll(".subtitle-color-frame").forEach((frame) => {
+    const image = frame.querySelector("img");
+    const placeholder = frame.querySelector(".subtitle-color-frame-placeholder");
+    if (frameUrl && image) {
+      image.src = frameUrl;
+    } else if (frameUrl && placeholder) {
+      placeholder.outerHTML = `<img src="${escapeHtml(frameUrl)}" alt="" loading="lazy" />`;
+    }
+  });
+  group.querySelectorAll(".subtitle-color-frame strong").forEach((label) => {
+    label.textContent = subtitleAppearancePreviewTextForStyle(style, previewText);
+  });
 }
 
 function selectedCandidateIds() {
   return [...els.candidates.querySelectorAll("input[type='checkbox']:checked")]
     .map((input) => input.value)
     .filter(Boolean);
+}
+
+function selectedClipFormat() {
+  return document.querySelector("input[name='podcast-candidate-clip-format']:checked")?.value || "auto";
 }
 
 function setCandidateSelectionDisabled(disabled) {
@@ -452,9 +864,9 @@ function coverPreviewText(value) {
 }
 
 function coverTitleText(value) {
-  return String(value || "CAPA DO SHORT")
+  return String(value || "CAPA DO CORTE")
     .replace(/\s*\(editado\)\s*$/gi, "")
-    .trim() || "CAPA DO SHORT";
+    .trim() || "CAPA DO CORTE";
 }
 
 function coverOptionsHtml(output) {
@@ -604,21 +1016,119 @@ function outputPreviewFrameUrl(output) {
 function renderOutputs(job) {
   const outputs = Array.isArray(job?.outputs) ? job.outputs : [];
   if (!outputs.length) {
-    els.outputsMeta.textContent = "Renderize cortes para ver seus shorts prontos.";
-    els.outputs.innerHTML = '<div class="empty-state">Nenhum short renderizado ainda.</div>';
-    els.youtubeUploadAllButton.disabled = true;
-    if (els.downloadThumbnailsButton) els.downloadThumbnailsButton.disabled = true;
+    state.outputRenderToken += 1;
+    if (els.outputs) delete els.outputs.dataset.renderKey;
+    renderOutputsNow(job);
     return;
   }
-  els.outputsMeta.textContent = `${outputs.length} short(s) pronto(s) para revisar.`;
+
+  const renderKey = outputRenderKey(job, outputs);
+  if (els.outputs?.dataset.renderKey === renderKey) {
+    if (els.youtubeUploadAllButton) els.youtubeUploadAllButton.disabled = !state.youtubeAuthorized;
+    return;
+  }
+
+  const token = ++state.outputRenderToken;
+  showOutputRenderLoader(outputs.length);
+  runAfterLoaderPaint(() => {
+    if (token !== state.outputRenderToken) return;
+    if (job?.id && state.job?.id && job.id !== state.job.id) return;
+    renderOutputsNow(job);
+    if (els.outputs) els.outputs.dataset.renderKey = renderKey;
+  });
+}
+
+function outputRenderKey(job, outputs) {
+  const expanded = [...state.expandedOutputs].sort().join(",");
+  const tabs = [...state.outputTabs.entries()]
+    .sort(([left], [right]) => String(left).localeCompare(String(right)))
+    .map(([id, tab]) => `${id}:${tab}`)
+    .join(",");
+  return [
+    job?.id || "",
+    job?.status || "",
+    job?.updated_at || "",
+    state.youtubeAuthorized ? "yt" : "no-yt",
+    expanded,
+    tabs,
+    outputs
+      .map((output) => [
+        output?.id,
+        output?.title,
+        output?.description,
+        output?.hashtags,
+        output?.video_url,
+        output?.cover_updated_at,
+        output?.metadata_edited_at,
+        output?.subtitle_edited_at,
+        output?.timeline_updated_at,
+        output?.clip_format,
+        output?.youtube_uploaded_at,
+        Array.isArray(output?.cover_options) ? output.cover_options.length : 0,
+      ].join(":"))
+      .join("|"),
+  ].join("::");
+}
+
+function outputSkeletonHtml(count = 3) {
+  const total = Math.min(Math.max(Number(count || 3), 1), 6);
+  return `
+    <div class="clipper-ui-loader">
+      <span class="clipper-loader-spinner" aria-hidden="true"></span>
+      <strong>Preparando cortes renderizados</strong>
+    </div>
+    <div class="clipper-output-list is-loading-list" aria-hidden="true">
+      ${Array.from({ length: total }).map(() => `
+        <div class="clipper-output-card clipper-skeleton-output">
+          <span class="clipper-skeleton-video"></span>
+          <div class="clipper-output-copy">
+            <span class="clipper-skeleton-line is-title"></span>
+            <span class="clipper-skeleton-line"></span>
+            <span class="clipper-skeleton-line is-mid"></span>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function showOutputRenderLoader(count) {
+  if (els.outputsMeta) {
+    els.outputsMeta.textContent = "Montando cortes renderizados...";
+  }
+  if (els.youtubeUploadAllButton) els.youtubeUploadAllButton.disabled = true;
+  if (els.downloadThumbnailsButton) els.downloadThumbnailsButton.disabled = true;
+  if (els.downloadSubtitlesButton) els.downloadSubtitlesButton.disabled = true;
+  if (els.outputs) {
+    delete els.outputs.dataset.renderKey;
+    els.outputs.innerHTML = outputSkeletonHtml(count);
+  }
+}
+
+function renderOutputsNow(job) {
+  const outputs = Array.isArray(job?.outputs) ? job.outputs : [];
+  if (!outputs.length) {
+    els.outputsMeta.textContent = "Renderize cortes para ver seus cortes prontos.";
+    els.outputs.innerHTML = '<div class="empty-state">Nenhum corte renderizado ainda.</div>';
+    els.youtubeUploadAllButton.disabled = true;
+    if (els.downloadThumbnailsButton) els.downloadThumbnailsButton.disabled = true;
+    if (els.downloadSubtitlesButton) els.downloadSubtitlesButton.disabled = true;
+    return;
+  }
+  els.outputsMeta.textContent = `${outputs.length} corte(s) pronto(s) para revisar.`;
   els.youtubeUploadAllButton.disabled = !state.youtubeAuthorized;
   if (els.downloadThumbnailsButton) els.downloadThumbnailsButton.disabled = false;
+  if (els.downloadSubtitlesButton) {
+    els.downloadSubtitlesButton.disabled = !outputs.some(
+      (output) => output?.subtitle_url || output?.subtitle_path || output?.subtitle_key || output?.r2_subtitle_key,
+    );
+  }
   const candidatesById = new Map((job?.candidates || []).map((candidate) => [candidate.id, candidate]));
   els.outputs.innerHTML = outputs
     .map(
       (output, index) => {
         const candidate = candidatesById.get(output.id) || {};
-        const title = output.title || candidate.title || `Short ${index + 1}`;
+        const title = output.title || candidate.title || `Corte ${index + 1}`;
         const description = outputDescription(output, candidate, title);
         const tags = outputTagsForDisplay(output, title, description);
         const coverTitle = coverTitleText(output.cover_title || title);
@@ -639,7 +1149,21 @@ function renderOutputs(job) {
         const coverUrl = outputCoverUrl(output);
         const previewFrameUrl = outputPreviewFrameUrl(output);
         const burnSubtitles = output.burn_subtitles !== false;
+        const subtitleStyleLabel =
+          output.subtitle_style === "word" ? "Uma palavra por vez" : "Blocos";
+        const subtitleTextColorLabel = subtitleColorLabel(output.subtitle_text_color || "white");
+        const subtitleBorderColorLabel = subtitleColorLabel(output.subtitle_border_color || "black");
+        const subtitleSizeLabel = subtitleSizeLabelFor(output.subtitle_size || "medium");
+        const subtitlePositionLabel = subtitlePositionLabelFor(output.subtitle_position || "middle");
         const canDeleteOutput = Boolean(output.edited_from);
+        const outputId = String(output.id || "");
+        const detailsExpanded = state.expandedOutputs.has(outputId);
+        const publishAtValue = datetimeLocalValue(output.youtube_publish_at || output.publish_at || "");
+        const publishAtMin = minimumPublishAtLocalValue();
+        const youtubeUploaded = Boolean(output.youtube_uploaded || output.youtube_video_id);
+        const youtubeButtonLabel = youtubeUploaded ? "Enviar novamente" : "Enviar ao YouTube";
+        const outputPrivacy = output.youtube_privacy_status || els.youtubePrivacy?.value || "private";
+        const outputCategory = output.youtube_category_id || output.category_id || els.youtubeCategory?.value || "";
         return `
         <article class="clipper-output-card">
           <div class="clipper-output-media">
@@ -652,7 +1176,7 @@ function renderOutputs(job) {
               ${
                 previewFrameUrl
                   ? `<img src="${escapeHtml(previewFrameUrl)}" alt="Frame de ${escapeHtml(title)}" loading="lazy" />`
-                  : `<div class="clipper-output-placeholder">Prévia do short</div>`
+                  : `<div class="clipper-output-placeholder">Prévia do corte</div>`
               }
               <button
                 type="button"
@@ -675,14 +1199,30 @@ function renderOutputs(job) {
               </a>
             </div>
           </div>
-          <div class="clipper-output-copy">
-            <div class="output-heading">
-              <span>Short ${index + 1}</span>
-              <strong>${escapeHtml(title)}</strong>
-            </div>
-            ${coverOptionsHtml(output)}
-            ${coverCustomizationHtml(output, coverTemplate, coverTextPosition, hasFramePreviews)}
-            <dl class="output-metadata">
+          ${renderOutputCopyHtml({
+            output,
+            outputs,
+            title,
+            description,
+            tags,
+            coverTitle,
+            coverTemplate,
+            coverTextPosition,
+            hasFramePreviews,
+            videoUrl,
+            coverUrl,
+            previewFrameUrl,
+            burnSubtitles,
+            canDeleteOutput,
+            publishAtValue,
+            publishAtMin,
+            youtubeUploaded,
+            youtubeButtonLabel,
+            outputPrivacy,
+            outputCategory,
+          })}
+          <!-- Legacy output layout removed from the UI after tabbed layout migration.
+            <dl class="output-metadata output-metadata-primary">
               <div>
                 <dt><label for="podcast-youtube-title-${escapeHtml(output.id)}">Título do vídeo</label></dt>
                 <dd>
@@ -707,6 +1247,19 @@ function renderOutputs(job) {
                   >${escapeHtml(description)}</textarea>
                 </dd>
               </div>
+            </dl>
+            <button
+              type="button"
+              class="secondary-button output-details-toggle"
+              data-output-details-toggle="${escapeHtml(output.id)}"
+              aria-expanded="${detailsExpanded ? "true" : "false"}"
+            >
+              ${detailsExpanded ? "Esconder" : "Mostrar mais"}
+            </button>
+            <div class="output-details" data-output-details="${escapeHtml(output.id)}" ${detailsExpanded ? "" : "hidden"}>
+              ${coverOptionsHtml(output)}
+              ${coverCustomizationHtml(output, coverTemplate, coverTextPosition, hasFramePreviews)}
+              <dl class="output-metadata">
               <div>
                 <dt><label for="podcast-cover-title-${escapeHtml(output.id)}">Texto da capa</label></dt>
                 <dd>
@@ -733,6 +1286,20 @@ function renderOutputs(job) {
                 </dd>
               </div>
               <div>
+                <dt><label for="podcast-youtube-publish-at-${escapeHtml(output.id)}">Agendar publicação</label></dt>
+                <dd>
+                  <input
+                    id="podcast-youtube-publish-at-${escapeHtml(output.id)}"
+                    class="output-edit-input"
+                    data-youtube-publish-at="${escapeHtml(output.id)}"
+                    type="datetime-local"
+                    min="${escapeHtml(publishAtMin)}"
+                    value="${escapeHtml(publishAtValue)}"
+                  />
+                  <div class="helper">Vazio envia agora. Com horário preenchido, o YouTube publica automaticamente no horário escolhido.</div>
+                </dd>
+              </div>
+              <div>
                 <dt>Resultado</dt>
                 <dd>${Math.round(output.duration || 0)}s finais · ${Math.round(output.source_duration || 0)}s originais · ${escapeHtml(output.removed_silence_seconds || 0)}s de silêncio removido</dd>
               </div>
@@ -742,7 +1309,7 @@ function renderOutputs(job) {
               </div>
               <div>
                 <dt>Legenda</dt>
-                <dd>${burnSubtitles ? "Aplicada ao vídeo + arquivo de legenda disponível" : "Vídeo sem legenda aplicada + arquivo de legenda disponível"}</dd>
+                <dd>${burnSubtitles ? `Aplicada ao vídeo (${escapeHtml(subtitleStyleLabel)} · ${escapeHtml(subtitleSizeLabel)} · ${escapeHtml(subtitlePositionLabel)} · letra ${escapeHtml(subtitleTextColorLabel)} · borda ${escapeHtml(subtitleBorderColorLabel)}) + arquivo de legenda disponível` : "Vídeo sem legenda aplicada + arquivo de legenda disponível"}</dd>
               </div>
               <div>
                 <dt>Resumo</dt>
@@ -756,8 +1323,8 @@ function renderOutputs(job) {
                   </button>
                 </dd>
               </div>
-            </dl>
-            <div class="clip-editor" data-edit-panel="${escapeHtml(output.id)}" hidden>
+              </dl>
+              <div class="clip-editor" data-edit-panel="${escapeHtml(output.id)}" hidden>
               <div class="clip-editor-preview">
                 <video
                   controls
@@ -857,6 +1424,7 @@ function renderOutputs(job) {
                   <span data-range-end-label="${escapeHtml(output.id)}">Fim: ${escapeHtml(formatMilliseconds(output.duration || 0))}</span>
                 </div>
               </div>
+              ${subtitleColorPreviewHtml(output, previewFrameUrl)}
               <div class="subtitle-editor" data-subtitle-panel="${escapeHtml(output.id)}" hidden>
                 <label for="podcast-subtitle-${escapeHtml(output.id)}">Editar legenda</label>
                 <div
@@ -871,21 +1439,22 @@ function renderOutputs(job) {
               <div class="helper">
                 A exportação cria uma nova versão e mantém este clipe original intacto.
               </div>
-            </div>
-            <div class="output-actions">
+              </div>
+              <div class="output-actions">
               <button
                 type="button"
                 class="secondary-button youtube-upload-button"
                 data-output-id="${escapeHtml(output.id)}"
+                data-uploaded="${youtubeUploaded ? "true" : "false"}"
                 ${state.youtubeAuthorized ? "" : "disabled"}
               >
-                Enviar ao YouTube
+                ${escapeHtml(youtubeButtonLabel)}
               </button>
               <button type="button" class="secondary-button" data-subtitle-toggle="${escapeHtml(output.id)}" hidden>
                 Editar legenda
               </button>
               <button type="button" class="secondary-button" data-subtitle-save="${escapeHtml(output.id)}" hidden>
-                Salvar e atualizar vídeo
+                Salvar alterações no clipe atual
               </button>
               <button
                 type="button"
@@ -904,14 +1473,535 @@ function renderOutputs(job) {
                   ? `<button type="button" class="secondary-button danger-button output-delete-button" data-output-delete="${escapeHtml(output.id)}">Excluir clipe</button>`
                   : ""
               }
+              </div>
             </div>
-          </div>
+          -->
         </article>
       `;
       }
     )
     .join("");
+  for (const output of outputs) {
+    const outputId = String(output?.id || "");
+    if (outputId && state.outputTabs.get(outputId) === "edit") {
+      syncTimelinePreview(outputId);
+    }
+  }
   syncActionLockControls();
+}
+
+function outputTabsHtml(outputId, activeTab = "metadata") {
+  return OUTPUT_TABS.map(([tab, label], index) => `
+    <button
+      type="button"
+      class="output-tab ${tab === activeTab ? "is-active" : ""}"
+      role="tab"
+      aria-selected="${tab === activeTab ? "true" : "false"}"
+      data-output-tab="${escapeHtml(outputId)}"
+      data-output-tab-target="${escapeHtml(tab)}"
+    >
+      ${escapeHtml(label)}
+    </button>
+  `).join("");
+}
+
+function selectOutputTab(outputId, tabName) {
+  if (!outputId || !tabName) return;
+  state.outputTabs.set(outputId, tabName);
+  const tabs = els.outputs.querySelectorAll(`[data-output-tab="${CSS.escape(outputId)}"]`);
+  const panels = els.outputs.querySelectorAll(`[data-output-tab-panel="${CSS.escape(outputId)}"]`);
+  for (const tab of tabs) {
+    const selected = tab.dataset.outputTabTarget === tabName;
+    tab.classList.toggle("is-active", selected);
+    tab.setAttribute("aria-selected", selected ? "true" : "false");
+  }
+  for (const panel of panels) {
+    const selected = panel.dataset.outputTabName === tabName;
+    panel.classList.toggle("is-active", selected);
+    panel.hidden = !selected;
+  }
+  if (tabName === "edit") {
+    setActiveTimelineOutput(outputId);
+    syncTimelinePreview(outputId);
+  }
+}
+
+function outputTabPanelAttrs(outputId, tabName, activeTab) {
+  const active = tabName === activeTab;
+  return `class="output-tab-panel ${active ? "is-active" : ""}" data-output-tab-panel="${escapeHtml(outputId)}" data-output-tab-name="${escapeHtml(tabName)}" ${active ? "" : "hidden"}`;
+}
+
+function renderOutputCopyHtml({
+  output,
+  outputs,
+  title,
+  description,
+  tags,
+  coverTitle,
+  coverTemplate,
+  coverTextPosition,
+  hasFramePreviews,
+  videoUrl,
+  coverUrl,
+  previewFrameUrl,
+  burnSubtitles,
+  canDeleteOutput,
+  publishAtValue,
+  publishAtMin,
+  youtubeUploaded,
+  youtubeButtonLabel,
+  outputPrivacy,
+  outputCategory,
+}) {
+  const outputId = String(output?.id || "");
+  const activeTab = state.outputTabs.get(outputId) || "metadata";
+  return `
+    <div class="clipper-output-copy">
+      <div class="output-tabs" role="tablist" aria-label="Configurações do clipe">
+        ${outputTabsHtml(outputId, activeTab)}
+      </div>
+      <div class="output-tab-panels">
+        ${metadataTabHtml({ output, title, description, tags, activeTab })}
+        ${coverTabHtml({ output, title, coverTitle, coverTemplate, coverTextPosition, hasFramePreviews, activeTab })}
+        ${subtitleTabHtml({ output, previewFrameUrl, burnSubtitles, activeTab })}
+        ${editTabHtml({ output, outputs, videoUrl, coverUrl, canDeleteOutput, activeTab })}
+        ${uploadTabHtml({ output, publishAtValue, publishAtMin, youtubeUploaded, youtubeButtonLabel, outputPrivacy, outputCategory, activeTab })}
+      </div>
+    </div>
+  `;
+}
+
+function metadataTabHtml({ output, title, description, tags, activeTab }) {
+  const outputId = String(output?.id || "");
+  return `
+    <section ${outputTabPanelAttrs(outputId, "metadata", activeTab)}>
+      <dl class="output-metadata output-metadata-primary">
+        <div>
+          <dt><label for="podcast-youtube-title-${escapeHtml(outputId)}">Título</label></dt>
+          <dd>
+            <input
+              id="podcast-youtube-title-${escapeHtml(outputId)}"
+              class="output-edit-input"
+              data-youtube-title="${escapeHtml(outputId)}"
+              data-previous-title="${escapeHtml(title)}"
+              maxlength="100"
+              value="${escapeHtml(title)}"
+            />
+          </dd>
+        </div>
+        <div>
+          <dt><label for="podcast-youtube-description-${escapeHtml(outputId)}">Descrição</label></dt>
+          <dd>
+            <textarea
+              id="podcast-youtube-description-${escapeHtml(outputId)}"
+              class="output-edit-textarea"
+              data-youtube-description="${escapeHtml(outputId)}"
+              rows="4"
+            >${escapeHtml(description)}</textarea>
+          </dd>
+        </div>
+        <div>
+          <dt><label for="podcast-youtube-tags-${escapeHtml(outputId)}">Hashtags</label></dt>
+          <dd>
+            <input
+              id="podcast-youtube-tags-${escapeHtml(outputId)}"
+              class="output-edit-input"
+              data-youtube-tags="${escapeHtml(outputId)}"
+              value="${escapeHtml(tags.join(" "))}"
+            />
+          </dd>
+        </div>
+        <div class="output-metadata-save">
+          <dt>Alterações</dt>
+          <dd>
+            <button type="button" class="secondary-button" data-metadata-save="${escapeHtml(outputId)}">
+              Salvar alterações
+            </button>
+          </dd>
+        </div>
+      </dl>
+    </section>
+  `;
+}
+
+function coverTabHtml({ output, title, coverTitle, coverTemplate, coverTextPosition, hasFramePreviews, activeTab }) {
+  const outputId = String(output?.id || "");
+  return `
+    <section ${outputTabPanelAttrs(outputId, "cover", activeTab)}>
+      ${coverOptionsHtml(output)}
+      ${coverCustomizationHtml(output, coverTemplate, coverTextPosition, hasFramePreviews)}
+      <dl class="output-metadata">
+        <div>
+          <dt><label for="podcast-cover-title-${escapeHtml(outputId)}">Texto da capa</label></dt>
+          <dd>
+            <input
+              id="podcast-cover-title-${escapeHtml(outputId)}"
+              class="output-edit-input"
+              data-cover-title="${escapeHtml(outputId)}"
+              data-manually-edited="${output.cover_title && output.cover_title !== title ? "true" : "false"}"
+              maxlength="80"
+              value="${escapeHtml(coverTitle)}"
+            />
+            <div class="helper">Texto curto usado nas miniaturas.</div>
+          </dd>
+        </div>
+        <div class="output-metadata-save">
+          <dt>Alterações</dt>
+          <dd>
+            <button type="button" class="secondary-button" data-metadata-save="${escapeHtml(outputId)}">
+              Salvar alterações
+            </button>
+          </dd>
+        </div>
+      </dl>
+    </section>
+  `;
+}
+
+function subtitleTabHtml({ output, previewFrameUrl, burnSubtitles, activeTab }) {
+  const outputId = String(output?.id || "");
+  return `
+    <section ${outputTabPanelAttrs(outputId, "subtitle", activeTab)}>
+      <div class="subtitle-editor" data-subtitle-panel="${escapeHtml(outputId)}" hidden>
+        <label for="podcast-subtitle-${escapeHtml(outputId)}">Editar legenda</label>
+        <div
+          id="podcast-subtitle-${escapeHtml(outputId)}"
+          class="subtitle-template"
+          data-subtitle-editor="${escapeHtml(outputId)}"
+        ></div>
+      </div>
+      ${subtitleColorPreviewHtml(output, previewFrameUrl)}
+      <div class="output-tab-actions">
+        <button type="button" class="secondary-button" data-subtitle-toggle="${escapeHtml(outputId)}">
+          Editar legenda
+        </button>
+        <button type="button" class="secondary-button" data-subtitle-save="${escapeHtml(outputId)}">
+          Salvar alterações
+        </button>
+        <button
+          type="button"
+          class="secondary-button"
+          data-subtitle-mode="${escapeHtml(outputId)}"
+          data-burn-subtitles="${burnSubtitles ? "false" : "true"}"
+        >
+          ${burnSubtitles ? "Salvar clipe sem legenda" : "Salvar clipe com legenda"}
+        </button>
+      </div>
+    </section>
+  `;
+}
+
+function editTabHtml({ output, outputs, canDeleteOutput, activeTab }) {
+  const outputId = String(output?.id || "");
+  return `
+    <section ${outputTabPanelAttrs(outputId, "edit", activeTab)}>
+      <div class="clip-editor" data-edit-panel="${escapeHtml(outputId)}">
+        ${clipEditorInnerHtml(output, outputs, canDeleteOutput)}
+      </div>
+    </section>
+  `;
+}
+
+function clipEditorInnerHtml(output, outputs, canDeleteOutput = false) {
+  const outputId = String(output?.id || "");
+  const project = timelineProjectForOutput(output, outputs);
+  const selected = selectedTimelineClip(outputId, project);
+  const selectedAsset = selected ? timelineAssetById(project, selected.assetId) : null;
+  const previewAsset = timelineAssetById(project, timelineClipAt(project, project.playhead)?.assetId || selected?.assetId);
+  return `
+    <div class="clip-editor-preview">
+      <video
+        controls
+        playsinline
+        preload="none"
+        poster="${escapeHtml(previewAsset?.posterUrl || outputCoverUrl(output))}"
+        data-src="${escapeHtml(previewAsset?.videoUrl || output.video_url || "")}"
+        data-edit-preview="${escapeHtml(outputId)}"
+      ></video>
+      <div class="clip-editor-time-panel">
+        <div>
+          <span>Cursor</span>
+          <strong data-nle-playhead-label="${escapeHtml(outputId)}">${escapeHtml(formatSeconds(project.playhead || 0))}</strong>
+        </div>
+        <div>
+          <span>Duração</span>
+          <strong data-nle-duration-label="${escapeHtml(outputId)}">${escapeHtml(formatSeconds(timelineProjectDuration(project)))}</strong>
+        </div>
+        <div>
+          <span>Clipe</span>
+          <strong data-nle-selected-label="${escapeHtml(outputId)}">${escapeHtml(selectedAsset?.name || "Nenhum")}</strong>
+        </div>
+        <div>
+          <span>Origem</span>
+          <strong data-nle-source-label="${escapeHtml(outputId)}">${escapeHtml(selected ? `${formatSeconds(selected.sourceIn)} - ${formatSeconds(selected.sourceOut)}` : "0.000s")}</strong>
+        </div>
+      </div>
+    </div>
+    <div class="nle-editor-shell" data-nle-editor="${escapeHtml(outputId)}">
+      <section class="nle-timeline-panel">
+        <div class="nle-toolbar">
+          <button type="button" class="secondary-button" data-nle-undo="${escapeHtml(outputId)}" title="Desfazer última ação da timeline (Ctrl+Z)">Desfazer</button>
+          <button
+            type="button"
+            class="secondary-button"
+            data-nle-split="${escapeHtml(outputId)}"
+            title="Cortar no cursor"
+            onclick="event.preventDefault(); event.stopPropagation(); window.flixoTimelineSplit?.(this.dataset.nleSplit); return false;"
+          >
+            Tesoura
+          </button>
+          <button type="button" class="secondary-button" data-edit-save="${escapeHtml(outputId)}">
+            Aplicar
+          </button>
+        </div>
+        ${timelineTrackHtml(outputId, project)}
+        ${selected ? timelineClipInspectorHtml(outputId, selected, selectedAsset) : ""}
+        <div class="output-tab-actions">
+          ${
+            canDeleteOutput
+              ? `<button type="button" class="secondary-button danger-button output-delete-button" data-output-delete="${escapeHtml(outputId)}">Excluir clipe</button>`
+              : ""
+          }
+        </div>
+      </section>
+      <section class="nle-assets-panel">
+        <div class="cover-options-head">
+          <strong>Mídias do projeto</strong>
+          <span>Use o mesmo asset quantas vezes quiser.</span>
+        </div>
+        <div class="nle-asset-list">
+          ${timelineAssetsHtml(outputId, project)}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function timelineAssetsHtml(outputId, project) {
+  return (project.assets || []).map((asset) => `
+    <article class="nle-asset-card">
+      ${
+        asset.posterUrl
+          ? `<img src="${escapeHtml(asset.posterUrl)}" alt="" loading="lazy" />`
+          : `<span class="nle-asset-placeholder"></span>`
+      }
+      <div>
+        <strong>${escapeHtml(asset.name || "Asset")}</strong>
+        <span>${escapeHtml(formatSeconds(asset.duration || 0))}</span>
+      </div>
+      <button
+        type="button"
+        class="secondary-button"
+        data-nle-insert="${escapeHtml(outputId)}"
+        data-nle-asset-id="${escapeHtml(asset.id)}"
+        onclick="event.preventDefault(); event.stopPropagation(); window.flixoTimelineInsert?.(this.dataset.nleInsert, this.dataset.nleAssetId); return false;"
+      >
+        Inserir no cursor
+      </button>
+    </article>
+  `).join("");
+}
+
+function timelineTrackHtml(outputId, project) {
+  const duration = timelineVisualDuration(project);
+  const projectDuration = Math.max(0.1, timelineProjectDuration(project));
+  const playheadPercent = timelinePlayheadPercent(project, duration);
+  const clips = timelineVideoClips(project);
+  return `
+    <div class="nle-timeline" data-nle-timeline="${escapeHtml(outputId)}" data-duration="${escapeHtml(duration)}">
+      ${timelineRulerHtml(outputId, duration)}
+      <div class="nle-track" data-nle-track="${escapeHtml(outputId)}">
+        <div class="clip-range-playhead nle-playhead" data-nle-playhead="${escapeHtml(outputId)}" style="left: ${playheadPercent}%"></div>
+        <button
+          type="button"
+          class="nle-playhead-split"
+          data-nle-split="${escapeHtml(outputId)}"
+          style="left: ${playheadPercent}%"
+          title="Cortar no cursor"
+          aria-label="Cortar no cursor"
+          onclick="event.preventDefault(); event.stopPropagation(); window.flixoTimelineSplit?.(this.dataset.nleSplit); return false;"
+        >
+          <span aria-hidden="true">✂</span>
+        </button>
+        ${clips.map((clip, index) => timelineClipHtml(outputId, project, clip, index, duration)).join("")}
+      </div>
+      <button type="button" class="nle-audio-lane" data-nle-audio-add="${escapeHtml(outputId)}">
+        <span aria-hidden="true">♬</span>
+        Adicionar áudio
+      </button>
+      <div class="clip-range-readout">
+        <span>Cursor: ${escapeHtml(formatMilliseconds(project.playhead || 0))}</span>
+        <span>${clips.length} trecho(s)</span>
+        <span>Total: ${escapeHtml(formatMilliseconds(projectDuration))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function timelineClipHtml(outputId, project, clip, index, totalDuration) {
+  const asset = timelineAssetById(project, clip.assetId);
+  const selected = state.timelineSelections.get(outputId) === clip.id;
+  return `
+    <div
+      role="button"
+      tabindex="0"
+      class="nle-clip"
+      data-nle-clip="${escapeHtml(outputId)}"
+      data-nle-clip-id="${escapeHtml(clip.id)}"
+      data-selected="${selected ? "true" : "false"}"
+      style="${timelineClipVisualStyle(project, clip, totalDuration)}"
+      title="${escapeHtml(asset?.name || `Trecho ${index + 1}`)}"
+    >
+      <span
+        class="nle-clip-trim-handle nle-clip-trim-handle-start"
+        data-nle-trim-handle="${escapeHtml(outputId)}"
+        data-nle-clip-id="${escapeHtml(clip.id)}"
+        data-nle-trim-kind="start"
+        aria-hidden="true"
+      ></span>
+      <strong>${escapeHtml(asset?.name || `Trecho ${index + 1}`)}</strong>
+      <span data-nle-clip-duration="${escapeHtml(clip.id)}">${escapeHtml(formatSeconds(clip.duration))}</span>
+      <span
+        class="nle-clip-trim-handle nle-clip-trim-handle-end"
+        data-nle-trim-handle="${escapeHtml(outputId)}"
+        data-nle-clip-id="${escapeHtml(clip.id)}"
+        data-nle-trim-kind="end"
+        aria-hidden="true"
+      ></span>
+    </div>
+  `;
+}
+
+function timelineRulerHtml(outputId, duration) {
+  const total = Math.max(0.1, Number(duration || 0));
+  const interval = timelineRulerInterval(total);
+  const ticks = [];
+  for (let time = 0; time <= total + 0.001; time += interval) {
+    ticks.push(Math.min(time, total));
+  }
+  if (ticks[ticks.length - 1] < total) ticks.push(total);
+  return `
+    <div
+      class="nle-time-ruler"
+      data-nle-ruler="${escapeHtml(outputId)}"
+      role="slider"
+      tabindex="0"
+      aria-label="Navegar pela timeline"
+      aria-valuemin="0"
+      aria-valuemax="${escapeHtml(total)}"
+    >
+      ${ticks.map((time, index) => {
+        const left = Math.max(0, Math.min(100, (time / total) * 100));
+        const label = index === 0 ? "0,0s" : `${time.toFixed(1).replace(".", ",")}s`;
+        return `
+          <span class="nle-time-tick" style="left: ${left}%">
+            <strong>${escapeHtml(label)}</strong>
+          </span>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function timelineRulerInterval(duration) {
+  if (duration <= 12) return 4;
+  if (duration <= 30) return 5;
+  if (duration <= 90) return 10;
+  return 30;
+}
+
+function timelineClipInspectorHtml(outputId, clip, asset) {
+  return `
+    <div class="nle-clip-inspector">
+      <div class="field">
+        <label for="nle-source-in-${escapeHtml(outputId)}">Entrada no asset</label>
+        <input
+          id="nle-source-in-${escapeHtml(outputId)}"
+          class="output-edit-input"
+          data-nle-source-in="${escapeHtml(outputId)}"
+          type="number"
+          min="0"
+          step="0.001"
+          value="${escapeHtml(Number(clip.sourceIn || 0).toFixed(3))}"
+        />
+      </div>
+      <div class="field">
+        <label for="nle-source-out-${escapeHtml(outputId)}">Saída no asset</label>
+        <input
+          id="nle-source-out-${escapeHtml(outputId)}"
+          class="output-edit-input"
+          data-nle-source-out="${escapeHtml(outputId)}"
+          type="number"
+          min="0.1"
+          max="${escapeHtml(Number(asset?.duration || clip.sourceOut || 0).toFixed(3))}"
+          step="0.001"
+          value="${escapeHtml(Number(clip.sourceOut || 0).toFixed(3))}"
+        />
+      </div>
+    </div>
+  `;
+}
+
+function uploadTabHtml({ output, publishAtValue, publishAtMin, youtubeUploaded, youtubeButtonLabel, outputPrivacy, outputCategory, activeTab }) {
+  const outputId = String(output?.id || "");
+  return `
+    <section ${outputTabPanelAttrs(outputId, "upload", activeTab)}>
+      <dl class="output-metadata">
+        <div>
+          <dt><label for="podcast-youtube-privacy-${escapeHtml(outputId)}">Visibilidade</label></dt>
+          <dd>
+            <select id="podcast-youtube-privacy-${escapeHtml(outputId)}" data-youtube-privacy-output="${escapeHtml(outputId)}">
+              <option value="private" ${outputPrivacy === "private" ? "selected" : ""}>Privado</option>
+              <option value="unlisted" ${outputPrivacy === "unlisted" ? "selected" : ""}>Não listado</option>
+              <option value="public" ${outputPrivacy === "public" ? "selected" : ""}>Público</option>
+            </select>
+          </dd>
+        </div>
+        <div>
+          <dt><label for="podcast-youtube-category-${escapeHtml(outputId)}">Categoria</label></dt>
+          <dd>
+            <select id="podcast-youtube-category-${escapeHtml(outputId)}" data-youtube-category-output="${escapeHtml(outputId)}">
+              ${youtubeCategoryOptionsHtml(outputCategory)}
+            </select>
+          </dd>
+        </div>
+        <div>
+          <dt><label for="podcast-youtube-publish-at-${escapeHtml(outputId)}">Agendar publicação</label></dt>
+          <dd>
+            <input
+              id="podcast-youtube-publish-at-${escapeHtml(outputId)}"
+              class="output-edit-input"
+              data-youtube-publish-at="${escapeHtml(outputId)}"
+              type="datetime-local"
+              min="${escapeHtml(publishAtMin)}"
+              value="${escapeHtml(publishAtValue)}"
+            />
+            <div class="helper">Vazio envia agora. Com horário preenchido, o YouTube publica automaticamente no horário escolhido.</div>
+          </dd>
+        </div>
+      </dl>
+      <div class="output-tab-actions">
+        <button
+          type="button"
+          class="secondary-button youtube-upload-button"
+          data-output-id="${escapeHtml(outputId)}"
+          data-uploaded="${youtubeUploaded ? "true" : "false"}"
+          ${state.youtubeAuthorized ? "" : "disabled"}
+        >
+          ${escapeHtml(youtubeButtonLabel)}
+        </button>
+      </div>
+    </section>
+  `;
+}
+
+function youtubeCategoryOptionsHtml(selectedCategory) {
+  const selected = String(selectedCategory || "");
+  return YOUTUBE_CATEGORY_OPTIONS.map(([value, label]) => `
+    <option value="${escapeHtml(value)}" ${String(value) === selected ? "selected" : ""}>
+      ${escapeHtml(label)}
+    </option>
+  `).join("");
 }
 
 function outputDescription(output, candidate, title) {
@@ -924,11 +2014,988 @@ function outputDescription(output, candidate, title) {
   return `Um momento curto sobre ${String(title || "este trecho").toLowerCase()}.`;
 }
 
+function outputCandidate(outputId) {
+  return (state.job?.candidates || []).find((candidate) => String(candidate?.id || "") === String(outputId)) || {};
+}
+
+function outputById(outputId) {
+  return (state.job?.outputs || []).find((output) => String(output?.id || "") === String(outputId)) || null;
+}
+
+function outputAssetId(outputId) {
+  return `asset-${String(outputId || "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function timelineAssetFromOutput(output) {
+  const outputId = String(output?.id || "");
+  return {
+    id: outputAssetId(outputId),
+    type: "video",
+    name: output?.title || `Corte ${outputId.slice(0, 6)}`,
+    duration: Math.max(0.1, Number(output?.duration || 0)),
+    sourceOutputId: outputId,
+    videoUrl: cacheBustedUrl(output?.video_url || "", output?.subtitle_edited_at || output?.edited_at),
+    subtitleUrl: output?.subtitle_url || "",
+    posterUrl: outputPreviewFrameUrl(output),
+  };
+}
+
+function timelineAssetsForOutputs(outputs) {
+  return (outputs || [])
+    .filter((output) => output?.id && output?.video_url && Number(output?.duration || 0) > 0)
+    .map(timelineAssetFromOutput);
+}
+
+function createTimelineProjectFromOutput(output, outputs = state.job?.outputs || []) {
+  const assets = timelineAssetsForOutputs(outputs);
+  const outputId = String(output?.id || "");
+  const primaryAsset = assets.find((asset) => asset.sourceOutputId === outputId) || timelineAssetFromOutput(output);
+  const duration = Math.max(0.1, Number(primaryAsset.duration || output?.duration || 0));
+  return recalculateTimelineStarts({
+    version: 1,
+    assets: mergeTimelineAssets([primaryAsset], assets),
+    tracks: [
+      {
+        id: "v1",
+        type: "video",
+        clips: [
+          {
+            id: `clip-${outputId || Date.now()}`,
+            assetId: primaryAsset.id,
+            sourceIn: 0,
+            sourceOut: duration,
+            timelineStart: 0,
+            duration,
+          },
+        ],
+      },
+    ],
+    playhead: 0,
+  });
+}
+
+function mergeTimelineAssets(existingAssets, projectAssets) {
+  const map = new Map();
+  for (const asset of [...(existingAssets || []), ...(projectAssets || [])]) {
+    if (!asset?.id) continue;
+    map.set(String(asset.id), {
+      id: String(asset.id),
+      type: asset.type || "video",
+      name: asset.name || "Asset",
+      duration: Math.max(0.1, Number(asset.duration || 0)),
+      sourceOutputId: String(asset.sourceOutputId || asset.source_output_id || ""),
+      videoUrl: asset.videoUrl || asset.video_url || "",
+      subtitleUrl: asset.subtitleUrl || asset.subtitle_url || "",
+      posterUrl: asset.posterUrl || asset.poster_url || "",
+    });
+  }
+  return [...map.values()].filter((asset) => asset.sourceOutputId);
+}
+
+function normalizeTimelineProject(project, output, outputs = state.job?.outputs || []) {
+  if (!project || typeof project !== "object") {
+    return createTimelineProjectFromOutput(output, outputs);
+  }
+  const assets = mergeTimelineAssets(project.assets || [], timelineAssetsForOutputs(outputs));
+  const assetIds = new Set(assets.map((asset) => asset.id));
+  const tracks = Array.isArray(project.tracks) ? project.tracks : [];
+  const videoTrack = tracks.find((track) => track?.type === "video") || tracks[0] || {};
+  const clips = (Array.isArray(videoTrack.clips) ? videoTrack.clips : [])
+    .filter((clip) => clip?.assetId && assetIds.has(String(clip.assetId)))
+    .map((clip, index) => {
+      const asset = assets.find((item) => item.id === String(clip.assetId));
+      const assetDuration = Math.max(0.1, Number(asset?.duration || 0));
+      const sourceIn = Math.max(0, Math.min(Number(clip.sourceIn || 0), Math.max(0, assetDuration - 0.1)));
+      const sourceOut = Math.max(sourceIn + 0.1, Math.min(Number(clip.sourceOut || assetDuration), assetDuration));
+      return {
+        id: String(clip.id || `clip-${index + 1}-${Date.now()}`),
+        assetId: String(clip.assetId),
+        sourceIn,
+        sourceOut,
+        timelineStart: Math.max(0, Number(clip.timelineStart || 0)),
+        duration: Math.max(0.1, sourceOut - sourceIn),
+      };
+    });
+
+  if (!clips.length) {
+    return createTimelineProjectFromOutput(output, outputs);
+  }
+
+  return recalculateTimelineStarts({
+    version: 1,
+    assets,
+    tracks: [{ id: "v1", type: "video", clips }],
+    playhead: Math.max(0, Number(project.playhead || 0)),
+  });
+}
+
+function timelineProjectForOutput(output, outputs = state.job?.outputs || []) {
+  const outputId = String(output?.id || "");
+  const cached = state.timelineProjects.get(outputId);
+  const sourceProject = cached || output?.timeline_project || null;
+  const project = normalizeTimelineProject(sourceProject, output, outputs);
+  project.playhead = Math.min(project.playhead || 0, Math.max(0, timelineProjectDuration(project) - 0.001));
+  state.timelineProjects.set(outputId, project);
+  if (!state.timelineSelections.get(outputId)) {
+    const selectedClip = timelineClipAt(project, project.playhead) || timelineVideoClips(project)[0];
+    if (selectedClip) state.timelineSelections.set(outputId, selectedClip.id);
+  }
+  return project;
+}
+
+function cloneTimelineProject(project) {
+  return JSON.parse(JSON.stringify(project || {}));
+}
+
+function setActiveTimelineOutput(outputId) {
+  if (outputId) state.activeTimelineOutputId = String(outputId);
+}
+
+function pushTimelineUndo(outputId) {
+  const output = outputById(outputId);
+  if (!output) return false;
+  const project = timelineProjectForOutput(output);
+  const stack = state.timelineUndoStacks.get(outputId) || [];
+  stack.push({
+    project: cloneTimelineProject(project),
+    selectedClipId: state.timelineSelections.get(outputId) || null,
+  });
+  if (stack.length > 50) stack.shift();
+  state.timelineUndoStacks.set(outputId, stack);
+  return true;
+}
+
+function undoTimelineAction(outputId = state.activeTimelineOutputId) {
+  const id = String(outputId || "");
+  const stack = state.timelineUndoStacks.get(id) || [];
+  const snapshot = stack.pop();
+  if (!snapshot) return false;
+  state.timelineUndoStacks.set(id, stack);
+  state.timelineProjects.set(id, cloneTimelineProject(snapshot.project));
+  if (snapshot.selectedClipId) {
+    state.timelineSelections.set(id, snapshot.selectedClipId);
+  } else {
+    state.timelineSelections.delete(id);
+  }
+  setActiveTimelineOutput(id);
+  refreshTimelineEditor(id);
+  els.outputsMeta.textContent = "Última ação da timeline desfeita.";
+  return true;
+}
+
+function isEditableShortcutTarget(target) {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']"));
+}
+
+function visibleTimelineOutputIdFromElement(target) {
+  if (!(target instanceof Element)) return "";
+  const editor = target.closest("[data-nle-editor]");
+  if (!editor || editor.closest("[hidden]")) return "";
+  return String(editor.dataset.nleEditor || "");
+}
+
+function currentTimelineShortcutOutputId(target = document.activeElement) {
+  const focusedOutputId = visibleTimelineOutputIdFromElement(target);
+  if (focusedOutputId) return focusedOutputId;
+
+  const activeOutputId = String(state.activeTimelineOutputId || "");
+  const activeEditor = activeOutputId
+    ? els.outputs?.querySelector(`[data-nle-editor="${CSS.escape(activeOutputId)}"]`)
+    : null;
+  if (activeEditor && !activeEditor.closest("[hidden]")) return activeOutputId;
+
+  const visibleEditor = els.outputs?.querySelector(".output-tab-panel.is-active [data-nle-editor]");
+  return visibleEditor && !visibleEditor.closest("[hidden]") ? String(visibleEditor.dataset.nleEditor || "") : "";
+}
+
+function timelineVideoTrack(project) {
+  const tracks = Array.isArray(project?.tracks) ? project.tracks : [];
+  let track = tracks.find((item) => item?.type === "video");
+  if (!track) {
+    track = { id: "v1", type: "video", clips: [] };
+    project.tracks = [track, ...tracks];
+  }
+  if (!Array.isArray(track.clips)) track.clips = [];
+  return track;
+}
+
+function timelineVideoClips(project) {
+  return timelineVideoTrack(project).clips;
+}
+
+function timelineProjectDuration(project) {
+  return timelineVideoClips(project).reduce((total, clip) => total + Math.max(0, Number(clip.duration || 0)), 0);
+}
+
+function recalculateTimelineStarts(project) {
+  let cursor = 0;
+  for (const clip of timelineVideoClips(project)) {
+    clip.sourceIn = Math.max(0, Number(clip.sourceIn || 0));
+    clip.sourceOut = Math.max(clip.sourceIn + 0.1, Number(clip.sourceOut || clip.sourceIn + Number(clip.duration || 0)));
+    clip.duration = Math.max(0.1, clip.sourceOut - clip.sourceIn);
+    clip.timelineStart = Number(cursor.toFixed(3));
+    clip.duration = Number(clip.duration.toFixed(3));
+    clip.sourceIn = Number(clip.sourceIn.toFixed(3));
+    clip.sourceOut = Number(clip.sourceOut.toFixed(3));
+    cursor += clip.duration;
+  }
+  project.playhead = Math.max(0, Math.min(Number(project.playhead || 0), Math.max(0, cursor - 0.001)));
+  return project;
+}
+
+function timelineAssetById(project, assetId) {
+  return (project.assets || []).find((asset) => String(asset.id) === String(assetId)) || null;
+}
+
+function timelineClipById(project, clipId) {
+  return timelineVideoClips(project).find((clip) => String(clip.id) === String(clipId)) || null;
+}
+
+function timelineClipAt(project, time) {
+  const cursor = Math.max(0, Number(time || 0));
+  return timelineVideoClips(project).find((clip) => cursor >= clip.timelineStart && cursor < clip.timelineStart + clip.duration) || null;
+}
+
+function timelineClipNear(project, time) {
+  const cursor = Math.max(0, Number(time || 0));
+  return timelineVideoClips(project).find((clip) => {
+    const start = Number(clip.timelineStart || 0);
+    const end = start + Number(clip.duration || 0);
+    return cursor >= start - 0.05 && cursor <= end + 0.05;
+  }) || null;
+}
+
+function selectedTimelineClip(outputId, project) {
+  const selectedId = state.timelineSelections.get(outputId);
+  return timelineClipById(project, selectedId) || timelineClipAt(project, project.playhead) || timelineVideoClips(project)[0] || null;
+}
+
+function timelineClipSourceTime(clip, timelineTime) {
+  return Math.max(0, Number(clip?.sourceIn || 0) + Math.max(0, Number(timelineTime || 0) - Number(clip?.timelineStart || 0)));
+}
+
+function singleTimelineClip(project) {
+  const clips = timelineVideoClips(project);
+  return clips.length === 1 ? clips[0] : null;
+}
+
+function timelineVisualDuration(project) {
+  return Math.max(0.1, timelineProjectDuration(project));
+}
+
+function timelinePlayheadVisualTime(project) {
+  return Number(project?.playhead || 0);
+}
+
+function timelinePlayheadPercent(project, visualDuration = timelineVisualDuration(project)) {
+  return Math.max(0, Math.min(100, (timelinePlayheadVisualTime(project) / Math.max(0.1, visualDuration)) * 100));
+}
+
+function timelineClipVisualStyle(project, clip, visualDuration = timelineVisualDuration(project)) {
+  const width = Math.max(7, (Number(clip.duration || 0) / Math.max(0.1, visualDuration)) * 100);
+  return `width: ${width}%;`;
+}
+
+function newTimelineClipId(prefix = "clip") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 7)}`;
+}
+
+function setTimelinePlayhead(outputId, time, selectClip = true) {
+  const output = outputById(outputId);
+  if (!output) return;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  project.playhead = Math.max(0, Math.min(Number(time || 0), Math.max(0, timelineProjectDuration(project) - 0.001)));
+  const previousSelection = state.timelineSelections.get(outputId);
+  if (selectClip) {
+    const clip = timelineClipAt(project, project.playhead);
+    if (clip) state.timelineSelections.set(outputId, clip.id);
+  }
+  if (previousSelection && previousSelection !== state.timelineSelections.get(outputId)) {
+    refreshTimelineEditor(outputId);
+  } else {
+    syncTimelinePreview(outputId);
+  }
+}
+
+function setTimelinePlayheadFromClientX(outputId, element, clientX, options = {}) {
+  const output = outputById(outputId);
+  if (!output || !element) return false;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  const previousSelection = state.timelineSelections.get(outputId);
+  const rect = element.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+  project.playhead = ratio * timelineProjectDuration(project);
+  const clip = timelineClipAt(project, project.playhead);
+  if (clip) state.timelineSelections.set(outputId, clip.id);
+  const selectionChanged = previousSelection && previousSelection !== state.timelineSelections.get(outputId);
+  if (!options.deferRefresh && selectionChanged) {
+    refreshTimelineEditor(outputId);
+  } else if (!options.deferPreview) {
+    syncTimelinePreview(outputId);
+  }
+  return true;
+}
+
+function setTimelinePlayheadFromPreviewCurrent(outputId) {
+  const output = outputById(outputId);
+  const preview = els.outputs?.querySelector(`[data-edit-preview="${CSS.escape(outputId)}"]`);
+  if (!output || !preview) return false;
+  if (preview.readyState < 1 && !preview.currentSrc && !preview.getAttribute("src")) return false;
+  const project = timelineProjectForOutput(output);
+  const current = Number(preview.currentTime || 0);
+  if (!Number.isFinite(current)) return false;
+  const selected = selectedTimelineClip(outputId, project);
+  const currentSource = preview.currentSrc || preview.getAttribute("src") || preview.dataset.src || "";
+  const clip =
+    selected &&
+    current >= Number(selected.sourceIn || 0) - 0.05 &&
+    current <= Number(selected.sourceOut || 0) + 0.05
+      ? selected
+      : timelineVideoClips(project).find((item) => {
+          const asset = timelineAssetById(project, item.assetId);
+          const assetUrl = asset?.videoUrl || "";
+          return (
+            assetUrl &&
+            currentSource.includes(assetUrl) &&
+            current >= Number(item.sourceIn || 0) - 0.05 &&
+            current <= Number(item.sourceOut || 0) + 0.05
+          );
+        });
+  if (!clip) return false;
+  const nextPlayhead = Math.max(
+    0,
+    Math.min(
+      Number(clip.timelineStart || 0) + Math.max(0, current - Number(clip.sourceIn || 0)),
+      Math.max(0, timelineProjectDuration(project) - 0.001),
+    ),
+  );
+  if (nextPlayhead <= 0.001 && Number(project.playhead || 0) > 0.001) return false;
+  project.playhead = nextPlayhead;
+  state.timelineSelections.set(outputId, clip.id);
+  return true;
+}
+
+function splitTimelineClip(outputId) {
+  const output = outputById(outputId);
+  if (!output) return false;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  const playhead = Math.max(0, Number(project.playhead || 0));
+  const selected = selectedTimelineClip(outputId, project);
+  const playheadClip = timelineClipAt(project, playhead) || timelineClipNear(project, playhead);
+  const clip = playheadClip || selected;
+  if (!clip) return false;
+  let localSplit = Math.max(
+    0,
+    Math.min(Number(clip.duration || 0), playhead - Number(clip.timelineStart || 0)),
+  );
+  const sourceIn = Number(clip.sourceIn || 0);
+  const sourceOut = Number(clip.sourceOut || sourceIn + Number(clip.duration || 0));
+  if (sourceIn + localSplit <= sourceIn + 0.05 || sourceIn + localSplit >= sourceOut - 0.05) {
+    localSplit = Number(clip.duration || 0) / 2;
+  }
+  const sourceSplit = sourceIn + localSplit;
+  if (sourceSplit <= sourceIn + 0.05 || sourceSplit >= sourceOut - 0.05) return false;
+  pushTimelineUndo(outputId);
+  const first = {
+    ...clip,
+    id: newTimelineClipId("clip-a"),
+    sourceOut: sourceSplit,
+    duration: sourceSplit - sourceIn,
+  };
+  const second = {
+    ...clip,
+    id: newTimelineClipId("clip-b"),
+    sourceIn: sourceSplit,
+    duration: sourceOut - sourceSplit,
+  };
+  const clips = timelineVideoClips(project);
+  const index = clips.findIndex((item) => item.id === clip.id);
+  clips.splice(index, 1, first, second);
+  state.timelineSelections.set(outputId, second.id);
+  recalculateTimelineStarts(project);
+  project.playhead = second.timelineStart;
+  refreshTimelineEditor(outputId);
+  return true;
+}
+
+function requestTimelineSplit(outputId) {
+  const id = String(outputId || "");
+  const now = Date.now();
+  if (state.lastTimelineSplit?.outputId === id && now - state.lastTimelineSplit.at < 350) {
+    return true;
+  }
+  const didSplit = splitTimelineClip(id);
+  if (didSplit) state.lastTimelineSplit = { outputId: id, at: now };
+  return didSplit;
+}
+
+function timelineSplitFailureMessage(outputId) {
+  const output = outputById(outputId);
+  if (!output) return "Não foi possível localizar este clipe.";
+  const project = timelineProjectForOutput(output);
+  const playhead = Number(project.playhead || 0);
+  const selected = selectedTimelineClip(outputId, project);
+  const clip = timelineClipAt(project, playhead) || timelineClipNear(project, playhead) || selected;
+  if (!clip) return `Não há trecho selecionado no cursor ${formatSeconds(playhead)}.`;
+  return `Não foi possível dividir em ${formatSeconds(playhead)}. Mova o cursor para dentro do trecho selecionado.`;
+}
+
+function handleTimelineSplitAction(outputId) {
+  if (!requestTimelineSplit(outputId)) {
+    els.error.hidden = false;
+    els.error.textContent = timelineSplitFailureMessage(outputId);
+    return false;
+  }
+  els.error.hidden = true;
+  els.error.textContent = "";
+  els.outputsMeta.textContent = "Corte dividido na timeline.";
+  return true;
+}
+
+function handleTimelineInsertAction(outputId, assetId) {
+  if (!insertTimelineAsset(outputId, assetId)) {
+    els.error.hidden = false;
+    els.error.textContent = "Não foi possível inserir esta mídia na timeline.";
+    return false;
+  }
+  els.error.hidden = true;
+  els.error.textContent = "";
+  els.outputsMeta.textContent = "Mídia inserida na timeline.";
+  return true;
+}
+
+window.flixoTimelineSplit = handleTimelineSplitAction;
+window.flixoTimelineInsert = handleTimelineInsertAction;
+
+function stopTimelineDomEvent(event, preventDefault = true) {
+  if (preventDefault) event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation?.();
+  event.flixoTimelineHandled = true;
+}
+
+document.addEventListener(
+  "click",
+  (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    const nleSplitButton = target.closest("[data-nle-split]");
+    if (nleSplitButton) {
+      stopTimelineDomEvent(event);
+      handleTimelineSplitAction(nleSplitButton.dataset.nleSplit || "");
+      return;
+    }
+
+    const nleInsertAsset = target.closest("[data-nle-insert]");
+    if (nleInsertAsset) {
+      stopTimelineDomEvent(event);
+      handleTimelineInsertAction(nleInsertAsset.dataset.nleInsert || "", nleInsertAsset.dataset.nleAssetId || "");
+      return;
+    }
+
+    const nleUndoButton = target.closest("[data-nle-undo]");
+    if (nleUndoButton) {
+      stopTimelineDomEvent(event);
+      if (!undoTimelineAction(nleUndoButton.dataset.nleUndo || "")) {
+        els.outputsMeta.textContent = "Nenhuma ação da timeline para desfazer.";
+      }
+      return;
+    }
+
+    const nleAudioAddButton = target.closest("[data-nle-audio-add]");
+    if (nleAudioAddButton) {
+      stopTimelineDomEvent(event);
+      els.error.hidden = true;
+      els.error.textContent = "";
+      els.outputsMeta.textContent = "Faixa de audio preparada. O upload/biblioteca de audio entra na proxima etapa.";
+    }
+  },
+  true,
+);
+
+function insertTimelineAsset(outputId, assetId) {
+  const output = outputById(outputId);
+  if (!output) return false;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  const asset = timelineAssetById(project, assetId);
+  if (!asset) return false;
+  const clips = timelineVideoClips(project);
+  const cursorClip = timelineClipAt(project, project.playhead);
+  let index = clips.findIndex((clip) => clip.timelineStart >= project.playhead - 0.001);
+  if (index < 0) index = clips.length;
+  const duration = Math.max(0.1, Number(asset.duration || 0));
+  pushTimelineUndo(outputId);
+  if (cursorClip) {
+    const cursorIndex = clips.findIndex((item) => item.id === cursorClip.id);
+    const localTime = Math.max(
+      0,
+      Math.min(Number(cursorClip.duration || 0), Number(project.playhead || 0) - Number(cursorClip.timelineStart || 0)),
+    );
+    if (cursorIndex >= 0 && localTime > 0.05 && localTime < Number(cursorClip.duration || 0) - 0.05) {
+      const sourceSplit = Number(cursorClip.sourceIn || 0) + localTime;
+      const first = {
+        ...cursorClip,
+        id: newTimelineClipId("clip-a"),
+        sourceOut: sourceSplit,
+        duration: sourceSplit - Number(cursorClip.sourceIn || 0),
+      };
+      const second = {
+        ...cursorClip,
+        id: newTimelineClipId("clip-b"),
+        sourceIn: sourceSplit,
+        duration: Number(cursorClip.sourceOut || 0) - sourceSplit,
+      };
+      clips.splice(cursorIndex, 1, first, second);
+      index = cursorIndex + 1;
+    } else {
+      index = cursorIndex >= 0 && localTime >= Number(cursorClip.duration || 0) - 0.05 ? cursorIndex + 1 : cursorIndex;
+    }
+  }
+  const clip = {
+    id: newTimelineClipId("clip"),
+    assetId: asset.id,
+    sourceIn: 0,
+    sourceOut: duration,
+    timelineStart: project.playhead,
+    duration,
+  };
+  clips.splice(index, 0, clip);
+  state.timelineSelections.set(outputId, clip.id);
+  recalculateTimelineStarts(project);
+  refreshTimelineEditor(outputId);
+  return true;
+}
+
+function deleteTimelineClip(outputId) {
+  const output = outputById(outputId);
+  if (!output) return false;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  const clips = timelineVideoClips(project);
+  if (clips.length <= 1) return false;
+  const selected = selectedTimelineClip(outputId, project);
+  const index = clips.findIndex((clip) => clip.id === selected?.id);
+  if (index < 0) return false;
+  pushTimelineUndo(outputId);
+  clips.splice(index, 1);
+  const next = clips[Math.min(index, clips.length - 1)];
+  if (next) state.timelineSelections.set(outputId, next.id);
+  recalculateTimelineStarts(project);
+  refreshTimelineEditor(outputId);
+  return true;
+}
+
+function moveTimelineClip(outputId, direction) {
+  const output = outputById(outputId);
+  if (!output) return false;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  const clips = timelineVideoClips(project);
+  const selected = selectedTimelineClip(outputId, project);
+  const index = clips.findIndex((clip) => clip.id === selected?.id);
+  const nextIndex = direction === "left" ? index - 1 : index + 1;
+  if (index < 0 || nextIndex < 0 || nextIndex >= clips.length) return false;
+  pushTimelineUndo(outputId);
+  const [clip] = clips.splice(index, 1);
+  clips.splice(nextIndex, 0, clip);
+  state.timelineSelections.set(outputId, clip.id);
+  recalculateTimelineStarts(project);
+  project.playhead = clip.timelineStart;
+  refreshTimelineEditor(outputId);
+  return true;
+}
+
+function moveTimelineClipToIndex(outputId, clipId, targetIndex) {
+  const output = outputById(outputId);
+  if (!output) return false;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  const clips = timelineVideoClips(project);
+  const fromIndex = clips.findIndex((clip) => String(clip.id) === String(clipId));
+  if (fromIndex < 0) return false;
+  const nextIndex = Math.max(0, Math.min(Number(targetIndex || 0), clips.length - 1));
+  if (fromIndex === nextIndex) return false;
+  pushTimelineUndo(outputId);
+  const [clip] = clips.splice(fromIndex, 1);
+  clips.splice(nextIndex, 0, clip);
+  state.timelineSelections.set(outputId, clip.id);
+  recalculateTimelineStarts(project);
+  project.playhead = clip.timelineStart;
+  refreshTimelineEditor(outputId);
+  return true;
+}
+
+function trimTimelineClip(outputId, field, value) {
+  const output = outputById(outputId);
+  if (!output) return;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  const clip = selectedTimelineClip(outputId, project);
+  if (!clip) return;
+  const asset = timelineAssetById(project, clip.assetId);
+  const assetDuration = Math.max(0.1, Number(asset?.duration || clip.sourceOut || 0));
+  const number = Math.max(0, Number(value || 0));
+  pushTimelineUndo(outputId);
+  if (field === "sourceIn") {
+    clip.sourceIn = Math.min(number, Math.max(0, clip.sourceOut - 0.1));
+  } else {
+    clip.sourceOut = Math.max(clip.sourceIn + 0.1, Math.min(number, assetDuration));
+  }
+  recalculateTimelineStarts(project);
+  refreshTimelineEditor(outputId, { keepFocus: field });
+}
+
+function trimTimelineClipById(outputId, clipId, field, value, options = {}) {
+  const output = outputById(outputId);
+  if (!output) return false;
+  setActiveTimelineOutput(outputId);
+  const project = timelineProjectForOutput(output);
+  const clip = timelineClipById(project, clipId);
+  if (!clip) return false;
+  const asset = timelineAssetById(project, clip.assetId);
+  const assetDuration = Math.max(0.1, Number(asset?.duration || clip.sourceOut || 0));
+  const number = Math.max(0, Number(value || 0));
+  if (!options.skipUndo) pushTimelineUndo(outputId);
+  if (field === "sourceIn") {
+    clip.sourceIn = Math.min(number, Math.max(0, clip.sourceOut - 0.1));
+    project.playhead = clip.timelineStart;
+  } else {
+    clip.sourceOut = Math.max(clip.sourceIn + 0.1, Math.min(number, assetDuration));
+    project.playhead = clip.timelineStart + Math.max(0, clip.sourceOut - clip.sourceIn);
+  }
+  state.timelineSelections.set(outputId, clip.id);
+  recalculateTimelineStarts(project);
+  if (!options.deferRefresh) refreshTimelineEditor(outputId);
+  return true;
+}
+
+function timelineProjectPayload(outputId) {
+  const output = outputById(outputId);
+  if (!output) return null;
+  return recalculateTimelineStarts(timelineProjectForOutput(output));
+}
+
+function refreshTimelineEditor(outputId, options = {}) {
+  const output = outputById(outputId);
+  const panel = els.outputs?.querySelector(`[data-edit-panel="${CSS.escape(outputId)}"]`);
+  if (!output || !panel) return;
+  panel.innerHTML = clipEditorInnerHtml(output, state.job?.outputs || [], Boolean(output.edited_from));
+  syncTimelinePreview(outputId);
+  const focusField = options.keepFocus;
+  if (focusField) {
+    const selector = focusField === "sourceIn" ? "[data-nle-source-in]" : "[data-nle-source-out]";
+    const input = panel.querySelector(selector);
+    input?.focus();
+    input?.select?.();
+  }
+}
+
+function syncTimelinePreview(outputId) {
+  const output = outputById(outputId);
+  if (!output) return;
+  const project = timelineProjectForOutput(output);
+  const clip = timelineClipAt(project, project.playhead) || selectedTimelineClip(outputId, project);
+  const asset = clip ? timelineAssetById(project, clip.assetId) : null;
+  const duration = timelineVisualDuration(project);
+  const projectDuration = Math.max(0.1, timelineProjectDuration(project));
+  const playhead = els.outputs?.querySelector(`[data-nle-playhead="${CSS.escape(outputId)}"]`);
+  const splitButton = els.outputs?.querySelector(`.nle-playhead-split[data-nle-split="${CSS.escape(outputId)}"]`);
+  const playheadLabel = els.outputs?.querySelector(`[data-nle-playhead-label="${CSS.escape(outputId)}"]`);
+  const durationLabel = els.outputs?.querySelector(`[data-nle-duration-label="${CSS.escape(outputId)}"]`);
+  const selectedLabel = els.outputs?.querySelector(`[data-nle-selected-label="${CSS.escape(outputId)}"]`);
+  const sourceLabel = els.outputs?.querySelector(`[data-nle-source-label="${CSS.escape(outputId)}"]`);
+  const playheadPercent = `${timelinePlayheadPercent(project, duration)}%`;
+  if (playhead) playhead.style.left = playheadPercent;
+  if (splitButton) splitButton.style.left = playheadPercent;
+  if (playheadLabel) playheadLabel.textContent = formatSeconds(project.playhead);
+  if (durationLabel) durationLabel.textContent = formatSeconds(projectDuration);
+  if (selectedLabel) selectedLabel.textContent = asset?.name || "Nenhum";
+  if (sourceLabel && clip) sourceLabel.textContent = `${formatSeconds(clip.sourceIn)} - ${formatSeconds(clip.sourceOut)}`;
+  els.outputs?.querySelectorAll(`[data-nle-clip="${CSS.escape(outputId)}"]`).forEach((button) => {
+    const currentClip = timelineClipById(project, button.dataset.nleClipId || "");
+    button.dataset.selected = button.dataset.nleClipId === clip?.id ? "true" : "false";
+    if (currentClip) {
+      button.setAttribute("style", timelineClipVisualStyle(project, currentClip, duration));
+      const clipDuration = button.querySelector("[data-nle-clip-duration]");
+      if (clipDuration) clipDuration.textContent = formatSeconds(currentClip.duration);
+    }
+  });
+  const preview = els.outputs?.querySelector(`[data-edit-preview="${CSS.escape(outputId)}"]`);
+  if (!preview || !asset?.videoUrl) return;
+  preview.dataset.src = asset.videoUrl;
+  if (asset.posterUrl) preview.setAttribute("poster", asset.posterUrl);
+  const video = ensureVideoSource(preview);
+  if (!video) return;
+  const sourceTime = clip ? timelineClipSourceTime(clip, project.playhead) : 0;
+  const applySeek = () => {
+    const target = Math.max(0, Number(sourceTime || 0));
+    if (Number.isFinite(target)) {
+      video.currentTime = target;
+    }
+  };
+  if (video.readyState >= 1) {
+    applySeek();
+  } else {
+    video.addEventListener("loadedmetadata", applySeek, { once: true });
+  }
+}
+
+function syncTimelineFromPreview(outputId) {
+  const output = outputById(outputId);
+  const preview = els.outputs?.querySelector(`[data-edit-preview="${CSS.escape(outputId)}"]`);
+  if (!output || !preview) return;
+  const project = timelineProjectForOutput(output);
+  const clip = selectedTimelineClip(outputId, project);
+  if (!clip) return;
+  const current = Number(preview.currentTime || 0);
+  if (current >= clip.sourceOut) {
+    preview.pause();
+    preview.currentTime = clip.sourceOut;
+  }
+  project.playhead = Math.max(0, Math.min(clip.timelineStart + Math.max(0, current - clip.sourceIn), Math.max(0, timelineProjectDuration(project) - 0.001)));
+  const duration = Math.max(0.1, timelineProjectDuration(project));
+  const playhead = els.outputs?.querySelector(`[data-nle-playhead="${CSS.escape(outputId)}"]`);
+  const playheadLabel = els.outputs?.querySelector(`[data-nle-playhead-label="${CSS.escape(outputId)}"]`);
+  const selectedLabel = els.outputs?.querySelector(`[data-nle-selected-label="${CSS.escape(outputId)}"]`);
+  const sourceLabel = els.outputs?.querySelector(`[data-nle-source-label="${CSS.escape(outputId)}"]`);
+  const asset = timelineAssetById(project, clip.assetId);
+  if (playhead) playhead.style.left = `${(project.playhead / duration) * 100}%`;
+  const splitButton = els.outputs?.querySelector(`.nle-playhead-split[data-nle-split="${CSS.escape(outputId)}"]`);
+  if (splitButton) splitButton.style.left = `${(project.playhead / duration) * 100}%`;
+  if (playheadLabel) playheadLabel.textContent = formatSeconds(project.playhead);
+  if (selectedLabel) selectedLabel.textContent = asset?.name || "Nenhum";
+  if (sourceLabel) sourceLabel.textContent = `${formatSeconds(clip.sourceIn)} - ${formatSeconds(clip.sourceOut)}`;
+}
+
+function savedOutputMetadata(outputId) {
+  const output = outputById(outputId);
+  if (!output) return null;
+  const candidate = outputCandidate(outputId);
+  const title = output.title || candidate.title || "Corte";
+  const description = outputDescription(output, candidate, title);
+  return {
+    title,
+    description,
+    tags: outputTagsForDisplay(output, title, description),
+    cover_title: coverTitleText(output.cover_title || title),
+    cover_template: output.cover_template || "impact",
+    cover_text_position: output.cover_text_position || "bottom",
+  };
+}
+
+function normalizeComparableText(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function normalizeComparableTags(tags) {
+  const values = Array.isArray(tags) ? tags : parseTags(tags);
+  return values
+    .map((tag) => String(tag || "").trim().replace(/^#/, "").toLowerCase())
+    .filter(Boolean)
+    .sort();
+}
+
+function sameTags(left, right) {
+  const leftTags = normalizeComparableTags(left);
+  const rightTags = normalizeComparableTags(right);
+  return leftTags.length === rightTags.length && leftTags.every((tag, index) => tag === rightTags[index]);
+}
+
+function subtitleColorLabel(value) {
+  return {
+    white: "branca",
+    yellow: "amarela",
+    black: "preta",
+    blue: "azul",
+    red: "vermelha",
+  }[String(value || "").toLowerCase()] || "branca";
+}
+
+function subtitleSizeLabelFor(value) {
+  return {
+    small: "letra menor",
+    medium: "letra média",
+    large: "letra maior",
+  }[String(value || "").toLowerCase()] || "letra média";
+}
+
+function subtitlePositionLabelFor(value) {
+  return {
+    top: "topo",
+    middle: "centro",
+    bottom: "baixo",
+  }[String(value || "").toLowerCase()] || "centro";
+}
+
+function subtitleColorHex(value) {
+  return {
+    white: "#ffffff",
+    yellow: "#ffdd57",
+    black: "#05070d",
+    blue: "#38bdf8",
+    red: "#ef4444",
+  }[String(value || "").toLowerCase()] || "#ffffff";
+}
+
+function subtitleAppearancePreviewText(output) {
+  return subtitleAppearancePreviewTextForStyle(output?.subtitle_style, output?.subtitle_preview_text);
+}
+
+function subtitleAppearancePreviewTextForStyle(subtitleStyle, text = "") {
+  const previewText = String(text || "você tem que sair cedo").trim();
+  if (normalizeSubtitleStyleValue(subtitleStyle) !== "word") {
+    return previewText.length > 38 ? `${previewText.slice(0, 35).trim()}...` : previewText;
+  }
+  const word = previewText.match(/[\p{L}\p{N}][\p{L}\p{N}-]{2,}/u)?.[0] || "atraso";
+  return word.length > 16 ? `${word.slice(0, 14)}-` : word;
+}
+
+function normalizeSubtitleStyleValue(value) {
+  return String(value || "").toLowerCase() === "word" ? "word" : "standard";
+}
+
+function selectedSubtitleAppearance(outputId, fallbackOutput = null) {
+  const selected = document.querySelector(`[data-subtitle-color-option="${CSS.escape(outputId)}"][data-selected="true"]`);
+  const selectedStyle = document.querySelector(`[data-subtitle-style-option="${CSS.escape(outputId)}"][data-selected="true"]`);
+  const selectedSize = document.querySelector(`[data-subtitle-size-option="${CSS.escape(outputId)}"][data-selected="true"]`);
+  const selectedPosition = document.querySelector(`[data-subtitle-position-option="${CSS.escape(outputId)}"][data-selected="true"]`);
+  return {
+    subtitle_style: selectedStyle?.dataset.subtitleStyle || fallbackOutput?.subtitle_style || "standard",
+    subtitle_text_color: selected?.dataset.subtitleTextColor || fallbackOutput?.subtitle_text_color || "white",
+    subtitle_border_color: selected?.dataset.subtitleBorderColor || fallbackOutput?.subtitle_border_color || "black",
+    subtitle_size: selectedSize?.dataset.subtitleSize || fallbackOutput?.subtitle_size || "medium",
+    subtitle_position: selectedPosition?.dataset.subtitlePosition || fallbackOutput?.subtitle_position || "middle",
+  };
+}
+
+function subtitleColorPreviewHtml(output, frameUrl) {
+  const outputId = String(output?.id || "");
+  if (!outputId) return "";
+  const currentStyle = normalizeSubtitleStyleValue(output?.subtitle_style || "standard");
+  const currentTextColor = output?.subtitle_text_color || "white";
+  const currentBorderColor = output?.subtitle_border_color || "black";
+  const currentSize = output?.subtitle_size || "medium";
+  const currentPosition = output?.subtitle_position || "middle";
+  const previewText = subtitleAppearancePreviewText(output);
+  const styleOptions = SUBTITLE_STYLE_OPTIONS.map(([value, label]) => {
+    const selected = value === currentStyle;
+    return `
+      <button
+        type="button"
+        class="subtitle-preview-choice"
+        data-subtitle-style-option="${escapeHtml(outputId)}"
+        data-subtitle-style="${escapeHtml(value)}"
+        data-selected="${selected ? "true" : "false"}"
+        aria-pressed="${selected ? "true" : "false"}"
+      >
+        ${escapeHtml(label)}
+      </button>
+    `;
+  }).join("");
+  const cards = SUBTITLE_COLOR_PRESETS.map((preset) => {
+    const selected = preset.text === currentTextColor && preset.border === currentBorderColor;
+    return `
+      <button
+        type="button"
+        class="subtitle-color-card"
+        data-subtitle-color-option="${escapeHtml(outputId)}"
+        data-subtitle-text-color="${escapeHtml(preset.text)}"
+        data-subtitle-border-color="${escapeHtml(preset.border)}"
+        data-selected="${selected ? "true" : "false"}"
+        aria-pressed="${selected ? "true" : "false"}"
+        style="--subtitle-preview-text: ${escapeHtml(subtitleColorHex(preset.text))}; --subtitle-preview-border: ${escapeHtml(subtitleColorHex(preset.border))};"
+      >
+        <span class="subtitle-color-frame">
+          ${
+            frameUrl
+              ? `<img src="${escapeHtml(frameUrl)}" alt="" loading="lazy" />`
+              : `<span class="subtitle-color-frame-placeholder"></span>`
+          }
+          <strong>${escapeHtml(previewText)}</strong>
+        </span>
+        <span class="subtitle-color-label">${escapeHtml(preset.label)}</span>
+      </button>
+    `;
+  }).join("");
+  const sizeOptions = SUBTITLE_SIZE_OPTIONS.map(([value, label]) => {
+    const selected = value === currentSize;
+    return `
+      <button
+        type="button"
+        class="subtitle-preview-choice"
+        data-subtitle-size-option="${escapeHtml(outputId)}"
+        data-subtitle-size="${escapeHtml(value)}"
+        data-selected="${selected ? "true" : "false"}"
+        aria-pressed="${selected ? "true" : "false"}"
+      >
+        ${escapeHtml(label)}
+      </button>
+    `;
+  }).join("");
+  const positionOptions = SUBTITLE_POSITION_OPTIONS.map(([value, label]) => {
+    const selected = value === currentPosition;
+    return `
+      <button
+        type="button"
+        class="subtitle-preview-choice"
+        data-subtitle-position-option="${escapeHtml(outputId)}"
+        data-subtitle-position="${escapeHtml(value)}"
+        data-selected="${selected ? "true" : "false"}"
+        aria-pressed="${selected ? "true" : "false"}"
+      >
+        ${escapeHtml(label)}
+      </button>
+    `;
+  }).join("");
+  return `
+    <section
+      class="subtitle-color-preview"
+      data-subtitle-style-group="${escapeHtml(outputId)}"
+      data-subtitle-color-group="${escapeHtml(outputId)}"
+      data-subtitle-size-group="${escapeHtml(outputId)}"
+      data-subtitle-position-group="${escapeHtml(outputId)}"
+      data-subtitle-style="${escapeHtml(currentStyle)}"
+      data-subtitle-size="${escapeHtml(currentSize)}"
+      data-subtitle-position="${escapeHtml(currentPosition)}"
+      data-subtitle-preview-text="${escapeHtml(output?.subtitle_preview_text || "")}"
+    >
+      <div class="cover-options-head">
+        <strong>${escapeHtml(output?.subtitle_preview_title || "Legenda no vídeo")}</strong>
+        <span>${escapeHtml(output?.subtitle_preview_hint || "Preview no frame do clipe")}</span>
+      </div>
+      <div class="subtitle-preview-section-title">Cor e borda</div>
+      <div class="subtitle-color-grid">
+        ${cards}
+      </div>
+      <div class="subtitle-preview-controls">
+        <div>
+          <strong>Formato</strong>
+          <div class="subtitle-preview-choice-group">${styleOptions}</div>
+        </div>
+        <div>
+          <strong>Tamanho</strong>
+          <div class="subtitle-preview-choice-group">${sizeOptions}</div>
+        </div>
+        <div>
+          <strong>Posição</strong>
+          <div class="subtitle-preview-choice-group">${positionOptions}</div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function appendClipOptions(outputs, currentId) {
   return outputs
     .filter((output) => output?.id && output.id !== currentId)
     .map((output, index) => {
-      const title = output.title || `Short ${index + 1}`;
+      const title = output.title || `Corte ${index + 1}`;
       const duration = Math.round(output.duration || 0);
       return `<option value="${escapeHtml(output.id)}">${escapeHtml(title)} · ${duration}s</option>`;
     })
@@ -981,10 +3048,14 @@ function outputTags(title, description) {
   if (text.includes("turbo")) add("#Turbo", "#CarrosPreparados");
   if (text.includes("oficina") || text.includes("mecanica")) add("#Oficina", "#MecanicaAutomotiva");
   if (text.includes("roda")) add("#Rodas");
+  if (text.includes("stand up") || text.includes("standup") || text.includes("comediante") || text.includes("plateia")) {
+    add("#StandUp", "#Comedia", "#Humor", "#Brasil");
+  }
+  if (text.includes("sao paulo") || /\bsp\b/.test(text)) add("#SaoPaulo", "#SP", "#Brasil");
   if (text.includes("motiv") || text.includes("crescer") || text.includes("sonho")) add("#Motivacao");
   if (text.includes("empreend")) add("#Empreendedorismo");
   if (text.includes("dinheiro") || text.includes("negocio")) add("#Negocios");
-  if (text.includes("humor") || text.includes("engrac")) add("#Humor");
+  if (text.includes("humor") || text.includes("engrac") || text.includes("comedia")) add("#Humor", "#Comedia");
 
   if (hasAutomotiveContext(text)) add("#Carros", "#Automotivo");
   add(...keywordTags(text));
@@ -993,13 +3064,24 @@ function outputTags(title, description) {
 
 function outputTagsForDisplay(output, title, description) {
   const saved = Array.isArray(output?.youtube_tags) ? output.youtube_tags : [];
+  const sourceMetadata = state.job?.source_metadata || {};
+  const sourceText = [
+    sourceMetadata.title,
+    sourceMetadata.channel,
+    sourceMetadata.uploader,
+    Array.isArray(sourceMetadata.tags) ? sourceMetadata.tags.join(" ") : "",
+    Array.isArray(sourceMetadata.categories) ? sourceMetadata.categories.join(" ") : "",
+  ].filter(Boolean).join(" ");
+  const suggested = outputTags(`${title} ${sourceText}`, description);
   if (saved.length) {
-    return saved
+    const normalizedSaved = saved
       .map((tag) => `#${String(tag || "").trim().replace(/^#/, "")}`)
       .filter((tag) => tag.length > 1 && !isGenericHashtag(tag))
+    return [...suggested, ...normalizedSaved]
+      .filter((tag, index, list) => list.findIndex((item) => item.toLowerCase() === tag.toLowerCase()) === index)
       .slice(0, 12);
   }
-  return outputTags(title, description);
+  return suggested;
 }
 
 function normalizeTagText(value) {
@@ -1047,8 +3129,12 @@ function keywordTags(text) {
     ["invest", "#Investimentos"],
     ["familia", "#Familia"],
     ["relacionamento", "#Relacionamento"],
+    ["stand up", "#StandUp"],
+    ["standup", "#StandUp"],
     ["humor", "#Humor"],
     ["comedia", "#Comedia"],
+    ["comediante", "#Comediante"],
+    ["sao paulo", "#SaoPaulo"],
     ["cinema", "#Cinema"],
     ["filme", "#Filmes"],
     ["musica", "#Musica"],
@@ -1116,9 +3202,25 @@ function hashtagTitleCase(value) {
 }
 
 function isGenericHashtag(tag) {
-  return ["#shorts", "#podcast", "#youtubeshorts", "#youtube"].includes(
-    String(tag || "").toLowerCase()
-  );
+  return [
+    "#shorts",
+    "#podcast",
+    "#youtubeshorts",
+    "#youtube",
+    "#editado",
+    "#culminando",
+    "#ridicularizado",
+    "#guardadas",
+    "#frescor",
+    "#combinacao",
+    "#dedicacao",
+    "#fundamental",
+    "#petrolifera",
+    "#temporada",
+    "#tecnico",
+    "#desenvolvimento",
+    "#investimentos",
+  ].includes(String(tag || "").toLowerCase());
 }
 
 function outputYoutubeOverride(outputId) {
@@ -1126,10 +3228,21 @@ function outputYoutubeOverride(outputId) {
   const description =
     els.outputs.querySelector(`[data-youtube-description="${CSS.escape(outputId)}"]`)?.value?.trim() || "";
   const tagsValue = els.outputs.querySelector(`[data-youtube-tags="${CSS.escape(outputId)}"]`)?.value || "";
+  const privacyStatus =
+    els.outputs.querySelector(`[data-youtube-privacy-output="${CSS.escape(outputId)}"]`)?.value ||
+    els.youtubePrivacy?.value ||
+    "private";
+  const categoryId =
+    els.outputs.querySelector(`[data-youtube-category-output="${CSS.escape(outputId)}"]`)?.value ||
+    els.youtubeCategory?.value ||
+    "";
   return {
     title,
     description,
     tags: parseTags(tagsValue),
+    publish_at: publishAtIsoValue(outputId),
+    privacy_status: privacyStatus,
+    category_id: categoryId,
   };
 }
 
@@ -1152,6 +3265,92 @@ function outputMetadataPayload(outputId) {
   };
 }
 
+function metadataHasPendingChanges(outputId) {
+  const saved = savedOutputMetadata(outputId);
+  if (!saved) return false;
+  const current = outputMetadataPayload(outputId);
+  return (
+    normalizeComparableText(current.title) !== normalizeComparableText(saved.title) ||
+    normalizeComparableText(current.description) !== normalizeComparableText(saved.description) ||
+    !sameTags(current.tags, saved.tags) ||
+    normalizeComparableText(current.cover_title) !== normalizeComparableText(saved.cover_title) ||
+    String(current.cover_template || "impact") !== String(saved.cover_template || "impact") ||
+    String(current.cover_text_position || "bottom") !== String(saved.cover_text_position || "bottom")
+  );
+}
+
+function subtitleAppearanceHasPendingChanges(outputId) {
+  const output = outputById(outputId);
+  if (!output) return false;
+  const current = selectedSubtitleAppearance(outputId, output);
+  return (
+    normalizeSubtitleStyleValue(current.subtitle_style) !== normalizeSubtitleStyleValue(output.subtitle_style || "standard") ||
+    String(current.subtitle_text_color || "white") !== String(output.subtitle_text_color || "white") ||
+    String(current.subtitle_border_color || "black") !== String(output.subtitle_border_color || "black") ||
+    String(current.subtitle_size || "medium") !== String(output.subtitle_size || "medium") ||
+    String(current.subtitle_position || "middle") !== String(output.subtitle_position || "middle")
+  );
+}
+
+function subtitleTextHasPendingChanges(outputId) {
+  const editor = els.outputs.querySelector(`[data-subtitle-editor="${CSS.escape(outputId)}"]`);
+  if (!editor || editor.dataset.loaded !== "true") return false;
+  return canonicalSubtitle(subtitleFromTemplate(outputId)) !== String(editor.dataset.savedSubtitle || "").trim();
+}
+
+function pendingOutputChanges(outputId) {
+  const changes = [];
+  if (metadataHasPendingChanges(outputId)) changes.push("metadados e miniatura");
+  if (subtitleAppearanceHasPendingChanges(outputId) || subtitleTextHasPendingChanges(outputId)) changes.push("legenda");
+  return changes;
+}
+
+async function savePendingOutputChanges(outputId) {
+  let updatedOutput = null;
+  if (metadataHasPendingChanges(outputId)) {
+    updatedOutput = await saveOutputMetadata(outputId);
+    if (updatedOutput) replaceOutput(updatedOutput);
+  }
+  if (subtitleAppearanceHasPendingChanges(outputId) || subtitleTextHasPendingChanges(outputId)) {
+    await ensureSubtitleEditorLoaded(outputId);
+    updatedOutput = await saveSubtitle(outputId, subtitleFromTemplate(outputId));
+    if (updatedOutput) replaceOutput(updatedOutput);
+  }
+  return updatedOutput;
+}
+
+async function confirmAndSavePendingChanges(outputIds) {
+  const ids = [...new Set(outputIds.map((id) => String(id || "")).filter(Boolean))];
+  const changed = ids
+    .map((outputId) => ({ outputId, changes: pendingOutputChanges(outputId) }))
+    .filter((item) => item.changes.length > 0);
+  if (!changed.length) return true;
+
+  const confirmed = await confirmAction({
+    title: "Salvar alterações antes de enviar?",
+    message:
+      changed.length === 1
+        ? `Este corte tem alterações não salvas em ${changed[0].changes.join(" e ")}. Salvar antes de enviar?`
+        : `${changed.length} cortes têm alterações não salvas. Salvar antes de enviar?`,
+    confirmLabel: "Salvar e enviar",
+    cancelLabel: "Cancelar envio",
+  });
+  if (!confirmed) return false;
+
+  setActionLocked(true);
+  els.outputsMeta.textContent = "Salvando alterações antes do envio...";
+  try {
+    for (const item of changed) {
+      await savePendingOutputChanges(item.outputId);
+    }
+  } finally {
+    setActionLocked(false);
+  }
+  renderOutputs(state.job);
+  loadHistory().catch(() => {});
+  return true;
+}
+
 function outputYoutubeOverrides() {
   const overrides = {};
   for (const output of state.job?.outputs || []) {
@@ -1161,11 +3360,11 @@ function outputYoutubeOverrides() {
 }
 
 function parseTags(value) {
-  return String(value || "")
+  const tags = String(value || "")
     .split(/[,\s]+/)
     .map((tag) => tag.trim().replace(/^#/, ""))
-    .filter(Boolean)
-    .slice(0, 15);
+    .filter((tag) => tag && !isGenericHashtag(`#${tag}`));
+  return [...new Set(tags)].slice(0, 12);
 }
 
 function youtubeSettingsPayload() {
@@ -1174,7 +3373,7 @@ function youtubeSettingsPayload() {
     privacy_status: els.youtubePrivacy?.value || "private",
     video_language: videoLanguage,
     audio_language: videoLanguage,
-    caption_language: els.youtubeCaptionLanguage?.value || "pt-BR",
+    category_id: els.youtubeCategory?.value || "",
   };
 }
 
@@ -1183,8 +3382,7 @@ function syncYoutubeActionState() {
     els.youtubeUploadAllButton.disabled = !state.youtubeAuthorized || !(state.job?.outputs || []).length;
   }
   els.outputs?.querySelectorAll(".youtube-upload-button").forEach((button) => {
-    const alreadyUploaded = button.dataset.uploaded === "true";
-    button.disabled = alreadyUploaded || !state.youtubeAuthorized;
+    button.disabled = !state.youtubeAuthorized;
   });
 }
 
@@ -1218,11 +3416,10 @@ function populateLanguageSelect(select, languages, selectedCode = "pt-BR") {
 }
 
 async function loadYoutubeI18nOptions() {
-  if (!els.youtubeVideoLanguage && !els.youtubeCaptionLanguage) return;
+  if (!els.youtubeVideoLanguage) return;
   const payload = await fetch("/api/youtube/i18n-options").then(readJson);
   const languages = payload?.data?.languages || [];
   populateLanguageSelect(els.youtubeVideoLanguage, languages, els.youtubeVideoLanguage?.value || "pt-BR");
-  populateLanguageSelect(els.youtubeCaptionLanguage, languages, els.youtubeCaptionLanguage?.value || "pt-BR");
 }
 
 function setYoutubeStatus(configured, authorized, channels = [], channelError = "") {
@@ -1240,14 +3437,14 @@ function setYoutubeStatus(configured, authorized, channels = [], channelError = 
   els.youtubeUploadAllButton.disabled = !authorized || !(state.job?.outputs || []).length;
   if (authorized && channels.length) {
     const channelNames = channels.map((channel) => channel.title).filter(Boolean).join(", ");
-    els.youtubeStatusMeta.textContent = `YouTube conectado: ${channelNames}. Revise título, descrição e hashtags antes de enviar.`;
+    els.youtubeStatusMeta.textContent = `Canal conectado: ${channelNames}`;
   } else if (authorized && channelError) {
     els.youtubeStatusMeta.textContent =
       "YouTube conectado, mas é preciso reconectar para permitir leitura do canal autorizado.";
   } else {
     els.youtubeStatusMeta.textContent = authorized
-      ? "YouTube conectado. Revise título, descrição e hashtags antes de enviar."
-      : "Conecte o canal para habilitar upload dos shorts.";
+      ? "YouTube conectado."
+      : "Conecte o canal para habilitar upload dos cortes.";
   }
   if (youtubeConnectLabel) {
     youtubeConnectLabel.textContent = authorized ? "Conectar outra conta" : "Conectar YouTube";
@@ -1294,11 +3491,22 @@ async function cancelCurrentJob() {
 async function uploadOutputToYoutube(outputId, button) {
   if (!state.jobId || !outputId) return;
   if (state.actionLocked) return;
-  const originalText = button.textContent;
+  let canContinue = false;
+  try {
+    canContinue = await confirmAndSavePendingChanges([outputId]);
+  } catch (error) {
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error ? error.message : String(error);
+    return;
+  }
+  if (!canContinue) return;
+  const activeButton =
+    els.outputs.querySelector(`.youtube-upload-button[data-output-id="${CSS.escape(outputId)}"]`) || button;
+  const originalText = activeButton.textContent;
   let uploaded = false;
   setActionLocked(true);
-  button.disabled = true;
-  button.textContent = "Enviando...";
+  activeButton.disabled = true;
+  activeButton.textContent = "Enviando...";
   try {
     const payload = await fetch("/api/youtube/upload-podcast", {
       method: "POST",
@@ -1306,17 +3514,30 @@ async function uploadOutputToYoutube(outputId, button) {
       body: JSON.stringify({
         job_id: state.jobId,
         output_id: outputId,
-        ...outputYoutubeOverride(outputId),
         ...youtubeSettingsPayload(),
+        ...outputYoutubeOverride(outputId),
       }),
     }).then(readJson);
     const upload = payload?.data?.upload;
+    const scheduled = Boolean(upload?.publish_at);
     uploaded = true;
-    button.textContent = "Enviado";
-    button.dataset.uploaded = "true";
-    els.outputsMeta.textContent = "Vídeo enviado. Legenda e capas continuam disponíveis para download.";
+    replaceOutput({
+      id: outputId,
+      youtube_uploaded: true,
+      youtube_uploaded_at: Math.floor(Date.now() / 1000),
+      youtube_video_id: upload?.video_id || "",
+      youtube_url: upload?.url || "",
+      youtube_publish_at: upload?.publish_at || null,
+      youtube_privacy_status: upload?.privacy_status || "",
+      youtube_category_id: upload?.category_id || "",
+    });
+    activeButton.textContent = "Enviar novamente";
+    activeButton.dataset.uploaded = "true";
+    els.outputsMeta.textContent = scheduled
+      ? "Publicação agendada. Legenda e capas continuam disponíveis para download."
+      : "Vídeo enviado. Legenda e capas continuam disponíveis para download.";
     if (upload?.url) {
-      button.insertAdjacentHTML(
+      activeButton.insertAdjacentHTML(
         "afterend",
         ` <a class="secondary-button" href="${escapeHtml(upload.url)}" target="_blank" rel="noreferrer">Abrir YouTube</a>`,
       );
@@ -1327,12 +3548,12 @@ async function uploadOutputToYoutube(outputId, button) {
   } finally {
     setActionLocked(false);
     if (uploaded) {
-      button.disabled = true;
-      button.textContent = "Enviado";
-      button.dataset.uploaded = "true";
+      activeButton.disabled = !state.youtubeAuthorized;
+      activeButton.textContent = "Enviar novamente";
+      activeButton.dataset.uploaded = "true";
     } else {
-      button.disabled = !state.youtubeAuthorized;
-      button.textContent = originalText;
+      activeButton.disabled = !state.youtubeAuthorized;
+      activeButton.textContent = originalText;
     }
   }
 }
@@ -1340,6 +3561,9 @@ async function uploadOutputToYoutube(outputId, button) {
 async function uploadAllOutputsToYoutube() {
   if (!state.jobId || !state.job?.outputs?.length) return;
   if (state.actionLocked) return;
+  const outputIds = state.job.outputs.map((output) => output?.id).filter(Boolean);
+  const canContinue = await confirmAndSavePendingChanges(outputIds);
+  if (!canContinue) return;
   const originalText = els.youtubeUploadAllButton.textContent;
   setActionLocked(true);
   els.youtubeUploadAllButton.disabled = true;
@@ -1357,7 +3581,10 @@ async function uploadAllOutputsToYoutube() {
       }),
     }).then(readJson);
     const uploads = payload?.data?.uploads || [];
-    els.outputsMeta.textContent = `${uploads.length} short(s) enviados ao YouTube. Legendas e capas seguem disponíveis para download.`;
+    const scheduledCount = uploads.filter((upload) => upload?.publish_at).length;
+    els.outputsMeta.textContent = scheduledCount
+      ? `${uploads.length} corte(s) enviados ao YouTube, com ${scheduledCount} publicação(ões) agendada(s).`
+      : `${uploads.length} corte(s) enviados ao YouTube. Legendas e capas seguem disponíveis para download.`;
     resetClipperForNewProject("Projeto enviado ao YouTube e movido para o histórico. Você já pode criar um novo projeto.");
     await loadHistory().catch(() => {});
     setYoutubeStatus(state.youtubeConfigured, state.youtubeAuthorized);
@@ -1514,6 +3741,68 @@ async function downloadAllThumbnails() {
   }
 }
 
+async function downloadAllSubtitles() {
+  const outputs = Array.isArray(state.job?.outputs) ? state.job.outputs : [];
+  const downloads = outputs
+    .map((output, index) => ({
+      output_id: output?.id,
+      subtitle_key: output?.subtitle_key || output?.r2_subtitle_key || "",
+      subtitle_url: output?.subtitle_url || "",
+      filename: `${String(index + 1).padStart(2, "0")}-${safeDownloadName(output?.title, output?.id)}.srt`,
+    }))
+    .filter((item) => item.output_id && (item.subtitle_key || item.subtitle_url));
+
+  if (!downloads.length) {
+    els.error.hidden = false;
+    els.error.textContent = "Nenhuma legenda disponível para download.";
+    return;
+  }
+
+  if (!state.jobId) return;
+  const originalText = els.downloadSubtitlesButton?.textContent || "Baixar legendas";
+  if (els.downloadSubtitlesButton) {
+    els.downloadSubtitlesButton.disabled = true;
+    els.downloadSubtitlesButton.textContent = "Preparando...";
+  }
+  try {
+    const response = await fetch(`/api/podcast/jobs/${encodeURIComponent(state.jobId)}/subtitles/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subtitles: downloads.map((item) => ({
+          output_id: item.output_id,
+          subtitle_key: item.subtitle_key,
+          subtitle_url: item.subtitle_url,
+          filename: item.filename,
+        })),
+      }),
+    });
+    if (!response.ok) {
+      let message = "Falha ao baixar legendas.";
+      try {
+        const payload = await response.json();
+        message = payload?.message || payload?.error || message;
+      } catch {
+        // Keep generic message when backend returns a non-JSON error.
+      }
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    await downloadFile(objectUrl, `legendas-${safeDownloadName(state.job?.title || state.jobId, state.jobId)}.zip`);
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+    els.outputsMeta.textContent = `${downloads.length} legenda(s) baixadas em um arquivo ZIP.`;
+  } catch (error) {
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (els.downloadSubtitlesButton) {
+      els.downloadSubtitlesButton.disabled = false;
+      els.downloadSubtitlesButton.textContent = originalText;
+    }
+  }
+}
+
 function cacheBustedUrl(url, version) {
   if (!url || !version) return url || "";
   const separator = String(url).includes("?") ? "&" : "?";
@@ -1596,14 +3885,19 @@ function canDeleteHistoryJob(job) {
 function renderHistory(jobs) {
   if (!els.history || !els.historyMeta) return;
   const visibleJobs = Array.isArray(jobs) ? jobs.filter((job) => job?.id !== state.jobId) : [];
+  const processing = isProcessingProject(state.job);
   state.historyCount = visibleJobs.length;
   syncProjectPanels(state.job);
   if (!visibleJobs.length) {
-    els.historyMeta.textContent = "Nenhum projeto criado ainda.";
+    els.historyMeta.textContent = processing
+      ? "Seu projeto atual está em processamento. Os projetos do histórico aparecerão aqui."
+      : "Nenhum projeto criado ainda.";
     els.history.innerHTML = '<div class="empty-state">Seus projetos aparecerão aqui.</div>';
     return;
   }
-  els.historyMeta.textContent = `${visibleJobs.length} projeto(s) recentes.`;
+  els.historyMeta.textContent = processing
+    ? "Você pode navegar pelos projetos do histórico enquanto o projeto atual fica pronto."
+    : `${visibleJobs.length} projeto(s) recentes.`;
   els.history.innerHTML = visibleJobs
     .map((job) => {
       const outputsCount = Number(job.outputs_count || 0);
@@ -1616,7 +3910,7 @@ function renderHistory(jobs) {
             <span>${escapeHtml(formatHistoryDate(job.updated_at || job.created_at))}</span>
             <div class="history-card-meta">
               <span class="meta-pill">${escapeHtml(status)}</span>
-              <span class="meta-pill">${outputsCount} short(s)</span>
+              <span class="meta-pill">${outputsCount} corte(s)</span>
             </div>
           </div>
           <div class="history-card-actions">
@@ -1640,6 +3934,11 @@ async function openHistoryJob(jobId) {
   if (!jobId) return;
   clearTimeout(state.timer);
   state.timer = null;
+  cancelPendingUiRenders();
+  state.timelineProjects.clear();
+  state.timelineSelections.clear();
+  state.timelineUndoStacks.clear();
+  state.activeTimelineOutputId = null;
   state.jobId = jobId;
   localStorage.setItem(PODCAST_LAST_JOB_KEY, jobId);
   const payload = await fetch(`/api/podcast/jobs/${encodeURIComponent(jobId)}`).then(readJson);
@@ -1729,6 +4028,10 @@ async function recoverFromMissingJob() {
   }
   const latestJobId = await latestPodcastJobId();
   if (latestJobId && latestJobId !== missingJobId) {
+    state.timelineProjects.clear();
+    state.timelineSelections.clear();
+    state.timelineUndoStacks.clear();
+    state.activeTimelineOutputId = null;
     state.jobId = latestJobId;
     localStorage.setItem(PODCAST_LAST_JOB_KEY, latestJobId);
     await refreshJob();
@@ -1736,6 +4039,13 @@ async function recoverFromMissingJob() {
   }
   state.jobId = null;
   state.job = null;
+  state.expandedOutputs.clear();
+  state.outputTabs.clear();
+  state.timelineProjects.clear();
+  state.timelineSelections.clear();
+  state.timelineUndoStacks.clear();
+  state.activeTimelineOutputId = null;
+  cancelPendingUiRenders();
   state.renderSelectionLocked = false;
   renderCandidates(null);
   renderOutputs(null);
@@ -1744,8 +4054,13 @@ async function recoverFromMissingJob() {
 
 async function restoreLastJob() {
   const queryJobId = new URLSearchParams(window.location.search).get("job");
-  const jobId = queryJobId || localStorage.getItem(PODCAST_LAST_JOB_KEY) || (await latestActivePodcastJobId());
+  const activeJobId = queryJobId ? "" : await latestActivePodcastJobId();
+  const jobId = queryJobId || activeJobId || localStorage.getItem(PODCAST_LAST_JOB_KEY);
   if (!jobId) return;
+  state.timelineProjects.clear();
+  state.timelineSelections.clear();
+  state.timelineUndoStacks.clear();
+  state.activeTimelineOutputId = null;
   state.jobId = jobId;
   try {
     const payload = await fetch(`/api/podcast/jobs/${encodeURIComponent(jobId)}`).then(readJson);
@@ -1754,6 +4069,13 @@ async function restoreLastJob() {
       localStorage.removeItem(PODCAST_LAST_JOB_KEY);
       state.jobId = null;
       state.job = null;
+      state.expandedOutputs.clear();
+      state.outputTabs.clear();
+      state.timelineProjects.clear();
+      state.timelineSelections.clear();
+      state.timelineUndoStacks.clear();
+      state.activeTimelineOutputId = null;
+      cancelPendingUiRenders();
       state.renderSelectionLocked = false;
       renderCandidates(null);
       renderOutputs(null);
@@ -1774,6 +4096,13 @@ async function restoreLastJob() {
     localStorage.removeItem(PODCAST_LAST_JOB_KEY);
     state.jobId = null;
     state.job = null;
+    state.expandedOutputs.clear();
+    state.outputTabs.clear();
+    state.timelineProjects.clear();
+    state.timelineSelections.clear();
+    state.timelineUndoStacks.clear();
+    state.activeTimelineOutputId = null;
+    cancelPendingUiRenders();
     state.renderSelectionLocked = false;
     renderCandidates(null);
     renderOutputs(null);
@@ -1783,7 +4112,14 @@ async function restoreLastJob() {
 async function latestPodcastJobId() {
   const payload = await fetch("/api/podcast/jobs?limit=10").then(readJson).catch(() => null);
   const jobs = payload?.data?.jobs || payload?.jobs || [];
-  return jobs.find((job) => !isInterruptedJob(job) && job?.status !== "failed")?.id || "";
+  return (
+    jobs.find((job) =>
+      !isInterruptedJob(job) &&
+      ["queued", "running", "ready", "rendering"].includes(String(job?.status || ""))
+    )?.id ||
+    jobs.find((job) => !isInterruptedJob(job) && job?.status !== "failed")?.id ||
+    ""
+  );
 }
 
 async function latestActivePodcastJobId() {
@@ -1813,11 +4149,13 @@ function replaceOutput(updatedOutput) {
   state.job.outputs = state.job.outputs.map((output) =>
     output?.id === updatedOutput?.id ? { ...output, ...updatedOutput } : output,
   );
+  if (els.outputs) delete els.outputs.dataset.renderKey;
 }
 
 function removeOutput(outputId) {
   if (!state.job || !Array.isArray(state.job.outputs)) return;
   state.job.outputs = state.job.outputs.filter((output) => String(output?.id || "") !== String(outputId || ""));
+  if (els.outputs) delete els.outputs.dataset.renderKey;
 }
 
 function ensureVideoSource(video) {
@@ -1878,6 +4216,78 @@ function selectCoverOption(outputId, coverUrl, frameUrl = "") {
   }
 }
 
+function selectSubtitleColorOption(outputId, textColor, borderColor) {
+  if (!outputId || !textColor || !borderColor) return;
+  const buttons = document.querySelectorAll(`[data-subtitle-color-option="${CSS.escape(outputId)}"]`);
+  for (const button of buttons) {
+    const selected = button.dataset.subtitleTextColor === textColor && button.dataset.subtitleBorderColor === borderColor;
+    button.dataset.selected = selected ? "true" : "false";
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  }
+}
+
+function selectSubtitleStyleOption(outputId, subtitleStyle) {
+  if (!outputId || !subtitleStyle) return;
+  const style = normalizeSubtitleStyleValue(subtitleStyle);
+  const buttons = document.querySelectorAll(`[data-subtitle-style-option="${CSS.escape(outputId)}"]`);
+  for (const button of buttons) {
+    const selected = normalizeSubtitleStyleValue(button.dataset.subtitleStyle) === style;
+    button.dataset.selected = selected ? "true" : "false";
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  }
+  const group = document.querySelector(`[data-subtitle-style-group="${CSS.escape(outputId)}"]`);
+  if (group) {
+    group.dataset.subtitleStyle = style;
+    for (const label of group.querySelectorAll(".subtitle-color-frame strong")) {
+      label.textContent = subtitleAppearancePreviewTextForStyle(style, group.dataset.subtitlePreviewText || "");
+    }
+  }
+  selectSubtitlePositionOption(outputId, style === "word" ? "middle" : "bottom");
+}
+
+function selectSubtitleSizeOption(outputId, size) {
+  if (!outputId || !size) return;
+  const buttons = document.querySelectorAll(`[data-subtitle-size-option="${CSS.escape(outputId)}"]`);
+  for (const button of buttons) {
+    const selected = button.dataset.subtitleSize === size;
+    button.dataset.selected = selected ? "true" : "false";
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  }
+  const group = document.querySelector(`[data-subtitle-size-group="${CSS.escape(outputId)}"]`);
+  if (group) group.dataset.subtitleSize = size;
+}
+
+function selectSubtitlePositionOption(outputId, position) {
+  if (!outputId || !position) return;
+  const buttons = document.querySelectorAll(`[data-subtitle-position-option="${CSS.escape(outputId)}"]`);
+  for (const button of buttons) {
+    const selected = button.dataset.subtitlePosition === position;
+    button.dataset.selected = selected ? "true" : "false";
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  }
+  const group = document.querySelector(`[data-subtitle-position-group="${CSS.escape(outputId)}"]`);
+  if (group) group.dataset.subtitlePosition = position;
+}
+
+async function ensureSubtitleEditorLoaded(outputId, button = null) {
+  const editor = els.outputs.querySelector(`[data-subtitle-editor="${CSS.escape(outputId)}"]`);
+  if (!editor || editor.dataset.loaded === "true") return editor;
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Carregando legenda...";
+  }
+  try {
+    renderSubtitleTemplate(outputId, await loadSubtitle(outputId));
+    return editor;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
 function updateCoverPreview(outputId) {
   if (!outputId) return;
   const group = els.outputs.querySelector(`[data-cover-preview-group="${CSS.escape(outputId)}"]`);
@@ -1885,7 +4295,7 @@ function updateCoverPreview(outputId) {
   const title =
     els.outputs.querySelector(`[data-cover-title="${CSS.escape(outputId)}"]`)?.value?.trim() ||
     els.outputs.querySelector(`[data-youtube-title="${CSS.escape(outputId)}"]`)?.value?.trim() ||
-    "Capa do short";
+    "Capa do corte";
   const template = els.outputs.querySelector(`[data-cover-template="${CSS.escape(outputId)}"]`)?.value || "impact";
   const position = els.outputs.querySelector(`[data-cover-text-position="${CSS.escape(outputId)}"]`)?.value || "bottom";
   group.dataset.coverTemplate = template;
@@ -1976,6 +4386,25 @@ function parseSrtBlocks(subtitle) {
   return blocks;
 }
 
+function subtitleFromBlocks(blocks) {
+  return blocks
+    .map((block, index) => {
+      const subtitleIndex = block.subtitleIndex || block.index || String(index + 1);
+      const startMs = Math.round(Number(block.startMs));
+      const endMs = Math.round(Number(block.endMs));
+      const text = String(block.text || "").trim() || " ";
+      const subtitleTime = `${formatSrtTimestamp(startMs)} --> ${formatSrtTimestamp(endMs)}`;
+      return `${subtitleIndex}\n${subtitleTime}\n${text}`;
+    })
+    .join("\n\n");
+}
+
+function canonicalSubtitle(subtitle) {
+  const blocks = parseSrtBlocks(subtitle);
+  if (!blocks.length) return String(subtitle || "").trim();
+  return subtitleFromBlocks(blocks);
+}
+
 function renderSubtitleTemplate(outputId, subtitle) {
   const editor = els.outputs.querySelector(`[data-subtitle-editor="${CSS.escape(outputId)}"]`);
   if (!editor) return;
@@ -2024,6 +4453,7 @@ function renderSubtitleTemplate(outputId, subtitle) {
     )
     .join("");
   editor.dataset.loaded = "true";
+  editor.dataset.savedSubtitle = canonicalSubtitle(subtitle);
 }
 
 function subtitleFromTemplate(outputId) {
@@ -2053,12 +4483,7 @@ function subtitleFromTemplate(outputId) {
     }
   });
 
-  return blocks
-    .map((block) => {
-      const subtitleTime = `${formatSrtTimestamp(block.startMs)} --> ${formatSrtTimestamp(block.endMs)}`;
-      return `${block.subtitleIndex}\n${subtitleTime}\n${block.text || " "}`;
-    })
-    .join("\n\n");
+  return subtitleFromBlocks(blocks);
 }
 
 function subtitleTimeTextFromRow(row) {
@@ -2196,24 +4621,28 @@ function commitOpenSubtitleTimeEdit(outputId) {
 }
 
 async function saveSubtitle(outputId, subtitle) {
+  const fallbackOutput = (state.job?.outputs || []).find((output) => String(output?.id || "") === String(outputId));
+  const appearance = selectedSubtitleAppearance(outputId, fallbackOutput);
   const payload = await fetch(
     `/api/podcast/jobs/${encodeURIComponent(state.jobId)}/outputs/${encodeURIComponent(outputId)}/subtitle`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subtitle }),
+      body: JSON.stringify({ subtitle, ...appearance }),
     },
   ).then(readJson);
   return payload?.data?.output || payload?.output || null;
 }
 
 async function setSubtitleMode(outputId, burnSubtitles) {
+  const fallbackOutput = (state.job?.outputs || []).find((output) => String(output?.id || "") === String(outputId));
+  const appearance = selectedSubtitleAppearance(outputId, fallbackOutput);
   const payload = await fetch(
     `/api/podcast/jobs/${encodeURIComponent(state.jobId)}/outputs/${encodeURIComponent(outputId)}/subtitle-mode`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ burn_subtitles: burnSubtitles }),
+      body: JSON.stringify({ burn_subtitles: burnSubtitles, ...appearance }),
     },
   ).then(readJson);
   return payload?.data?.output || payload?.output || null;
@@ -2231,15 +4660,24 @@ async function saveOutputMetadata(outputId) {
   return payload?.data?.output || payload?.output || null;
 }
 
+async function saveOutputTimeline(outputId) {
+  const timelineProject = timelineProjectPayload(outputId);
+  if (!timelineProject) throw new Error("Timeline inválida.");
+  const payload = await fetch(
+    `/api/podcast/jobs/${encodeURIComponent(state.jobId)}/outputs/${encodeURIComponent(outputId)}/timeline`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timeline_project: timelineProject }),
+    },
+  ).then(readJson);
+  return payload?.data?.output || payload?.output || null;
+}
+
 async function exportEditedOutput(outputId) {
-  const startInput = els.outputs.querySelector(`[data-edit-start="${CSS.escape(outputId)}"]`);
-  const endInput = els.outputs.querySelector(`[data-edit-end="${CSS.escape(outputId)}"]`);
-  const appendInput = els.outputs.querySelector(`[data-edit-append="${CSS.escape(outputId)}"]`);
-  const positionInput = els.outputs.querySelector(`[data-edit-position="${CSS.escape(outputId)}"]`);
-  const trimStart = Number(startInput?.value || 0);
-  const trimEnd = Number(endInput?.value || 0);
-  if (!Number.isFinite(trimStart) || !Number.isFinite(trimEnd) || trimEnd <= trimStart) {
-    throw new Error("Informe um início e fim válidos para o corte.");
+  const timelineProject = timelineProjectPayload(outputId);
+  if (!timelineProject || timelineProjectDuration(timelineProject) < 1) {
+    throw new Error("A timeline precisa ter pelo menos 1 segundo.");
   }
   const payload = await fetch(
     `/api/podcast/jobs/${encodeURIComponent(state.jobId)}/outputs/${encodeURIComponent(outputId)}/edit`,
@@ -2247,10 +4685,7 @@ async function exportEditedOutput(outputId) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        trim_start: trimStart,
-        trim_end: trimEnd,
-        append_output_id: appendInput?.value || null,
-        append_position: positionInput?.value || "after",
+        timeline_project: timelineProject,
       }),
     },
   ).then(readJson);
@@ -2370,6 +4805,51 @@ function seekPreview(outputId, time) {
 }
 
 els.outputs.addEventListener("click", async (event) => {
+  if (event.flixoTimelineHandled) return;
+
+  const nleTrimHandle = event.target.closest("[data-nle-trim-handle]");
+  if (nleTrimHandle) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+
+  const nleSplitButton = event.target.closest("[data-nle-split]");
+  if (nleSplitButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    handleTimelineSplitAction(nleSplitButton.dataset.nleSplit || "");
+    return;
+  }
+
+  const nleInsertAsset = event.target.closest("[data-nle-insert]");
+  if (nleInsertAsset) {
+    event.preventDefault();
+    event.stopPropagation();
+    handleTimelineInsertAction(nleInsertAsset.dataset.nleInsert || "", nleInsertAsset.dataset.nleAssetId || "");
+    return;
+  }
+
+  const nleUndoButton = event.target.closest("[data-nle-undo]");
+  if (nleUndoButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!undoTimelineAction(nleUndoButton.dataset.nleUndo || "")) {
+      els.outputsMeta.textContent = "Nenhuma ação da timeline para desfazer.";
+    }
+    return;
+  }
+
+  const nleAudioAddButton = event.target.closest("[data-nle-audio-add]");
+  if (nleAudioAddButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    els.error.hidden = true;
+    els.error.textContent = "";
+    els.outputsMeta.textContent = "Faixa de audio preparada. O upload/biblioteca de audio entra na proxima etapa.";
+    return;
+  }
+
   if (state.actionLocked && event.target.closest("button, a.secondary-button")) {
     event.preventDefault();
     return;
@@ -2378,6 +4858,29 @@ els.outputs.addEventListener("click", async (event) => {
   const playButton = event.target.closest("[data-output-play]");
   if (playButton) {
     playOutputVideo(playButton.dataset.outputPlay || "");
+    return;
+  }
+
+  const outputTab = event.target.closest("[data-output-tab]");
+  if (outputTab) {
+    selectOutputTab(outputTab.dataset.outputTab || "", outputTab.dataset.outputTabTarget || "");
+    return;
+  }
+
+  const detailsToggle = event.target.closest("[data-output-details-toggle]");
+  if (detailsToggle) {
+    const outputId = String(detailsToggle.dataset.outputDetailsToggle || "");
+    if (!outputId) return;
+    const details = els.outputs.querySelector(`[data-output-details="${CSS.escape(outputId)}"]`);
+    const expanded = details?.hidden === true;
+    if (expanded) {
+      state.expandedOutputs.add(outputId);
+    } else {
+      state.expandedOutputs.delete(outputId);
+    }
+    if (details) details.hidden = !expanded;
+    detailsToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    detailsToggle.textContent = expanded ? "Esconder" : "Mostrar mais";
     return;
   }
 
@@ -2411,6 +4914,40 @@ els.outputs.addEventListener("click", async (event) => {
     return;
   }
 
+  const subtitleColorOption = event.target.closest("[data-subtitle-color-option]");
+  if (subtitleColorOption) {
+    selectSubtitleColorOption(
+      subtitleColorOption.dataset.subtitleColorOption,
+      subtitleColorOption.dataset.subtitleTextColor,
+      subtitleColorOption.dataset.subtitleBorderColor,
+    );
+    return;
+  }
+
+  const subtitleStyleOption = event.target.closest("[data-subtitle-style-option]");
+  if (subtitleStyleOption) {
+    selectSubtitleStyleOption(
+      subtitleStyleOption.dataset.subtitleStyleOption,
+      subtitleStyleOption.dataset.subtitleStyle,
+    );
+    return;
+  }
+
+  const subtitleSizeOption = event.target.closest("[data-subtitle-size-option]");
+  if (subtitleSizeOption) {
+    selectSubtitleSizeOption(subtitleSizeOption.dataset.subtitleSizeOption, subtitleSizeOption.dataset.subtitleSize);
+    return;
+  }
+
+  const subtitlePositionOption = event.target.closest("[data-subtitle-position-option]");
+  if (subtitlePositionOption) {
+    selectSubtitlePositionOption(
+      subtitlePositionOption.dataset.subtitlePositionOption,
+      subtitlePositionOption.dataset.subtitlePosition,
+    );
+    return;
+  }
+
   const videoDownload = event.target.closest("[data-video-download]");
   if (videoDownload) {
     const outputId = String(videoDownload.dataset.videoDownload || "");
@@ -2439,14 +4976,14 @@ els.outputs.addEventListener("click", async (event) => {
       if (updatedOutput) replaceOutput(updatedOutput);
       renderOutputs(state.job);
       loadHistory().catch(() => {});
-      els.outputsMeta.textContent = "Textos salvos e capas atualizadas.";
+      els.outputsMeta.textContent = "Alterações salvas.";
     } catch (error) {
       els.error.hidden = false;
       els.error.textContent = error instanceof Error ? error.message : String(error);
     } finally {
       setActionLocked(false);
       metadataSave.disabled = false;
-      metadataSave.textContent = "Salvar textos e atualizar capas";
+      metadataSave.textContent = "Salvar alterações";
     }
     return;
   }
@@ -2454,6 +4991,86 @@ els.outputs.addEventListener("click", async (event) => {
   const youtubeButton = event.target.closest(".youtube-upload-button");
   if (youtubeButton) {
     uploadOutputToYoutube(youtubeButton.dataset.outputId, youtubeButton);
+    return;
+  }
+
+  if (Date.now() < state.suppressTimelineClickUntil) {
+    event.preventDefault();
+    return;
+  }
+
+  const timelineRuler = event.target.closest("[data-nle-ruler]");
+  if (timelineRuler) {
+    setTimelinePlayheadFromClientX(String(timelineRuler.dataset.nleRuler || ""), timelineRuler, event.clientX);
+    return;
+  }
+
+  const timelineClip = event.target.closest("[data-nle-clip]");
+  if (timelineClip) {
+    const outputId = String(timelineClip.dataset.nleClip || "");
+    const clipId = String(timelineClip.dataset.nleClipId || "");
+    const output = outputById(outputId);
+    if (!output || !clipId) return;
+    const project = timelineProjectForOutput(output);
+    const clip = timelineClipById(project, clipId);
+    if (!clip) return;
+    setActiveTimelineOutput(outputId);
+    state.timelineSelections.set(outputId, clip.id);
+    const track = timelineClip.closest("[data-nle-track]");
+    if (track) {
+      setTimelinePlayheadFromClientX(outputId, track, event.clientX);
+    } else {
+      project.playhead = clip.timelineStart;
+      syncTimelinePreview(outputId);
+    }
+    return;
+  }
+
+  const timelineTrack = event.target.closest("[data-nle-track]");
+  if (timelineTrack && !event.target.closest("[data-nle-clip]")) {
+    setTimelinePlayheadFromClientX(String(timelineTrack.dataset.nleTrack || ""), timelineTrack, event.clientX);
+    return;
+  }
+
+  const moveButton = event.target.closest("[data-nle-move]");
+  if (moveButton) {
+    moveTimelineClip(moveButton.dataset.nleMove || "", moveButton.dataset.nleDirection || "right");
+    return;
+  }
+
+  const deleteTimelineButton = event.target.closest("[data-nle-delete]");
+  if (deleteTimelineButton) {
+    if (!deleteTimelineClip(deleteTimelineButton.dataset.nleDelete || "")) {
+      els.error.hidden = false;
+      els.error.textContent = "A timeline precisa manter pelo menos um trecho.";
+    }
+    return;
+  }
+
+  const timelineSave = event.target.closest("[data-timeline-save]");
+  if (timelineSave) {
+    const outputId = String(timelineSave.dataset.timelineSave || "");
+    if (!outputId) return;
+    const originalText = timelineSave.textContent;
+    setActionLocked(true);
+    timelineSave.disabled = true;
+    timelineSave.textContent = "Salvando...";
+    try {
+      const updatedOutput = await saveOutputTimeline(outputId);
+      if (updatedOutput) replaceOutput(updatedOutput);
+      els.outputsMeta.textContent = "Timeline salva.";
+      renderOutputs(state.job);
+      loadHistory().catch(() => {});
+    } catch (error) {
+      els.error.hidden = false;
+      els.error.textContent = error instanceof Error ? error.message : String(error);
+    } finally {
+      setActionLocked(false);
+      if (document.contains(timelineSave)) {
+        timelineSave.disabled = false;
+        timelineSave.textContent = originalText;
+      }
+    }
     return;
   }
 
@@ -2491,28 +5108,11 @@ els.outputs.addEventListener("click", async (event) => {
     return;
   }
 
-  const editToggle = event.target.closest("[data-edit-toggle]");
   const editSave = event.target.closest("[data-edit-save]");
-  if (editToggle || editSave) {
-    const outputId = String(
-      editToggle?.dataset.editToggle || editSave?.dataset.editSave || "",
-    );
+  if (editSave) {
+    const outputId = String(editSave.dataset.editSave || "");
     if (!outputId) return;
-    const panel = els.outputs.querySelector(`[data-edit-panel="${CSS.escape(outputId)}"]`);
-    const saveButton = els.outputs.querySelector(`[data-edit-save="${CSS.escape(outputId)}"]`);
-    const subtitleButton = els.outputs.querySelector(`[data-subtitle-toggle="${CSS.escape(outputId)}"]`);
-    if (editToggle) {
-      const opening = panel?.hidden;
-      if (panel) panel.hidden = !opening;
-      if (saveButton) saveButton.hidden = !opening;
-      if (subtitleButton) subtitleButton.hidden = !opening;
-      editToggle.hidden = Boolean(opening);
-      if (opening) {
-        loadEditPreviewVideo(outputId);
-        syncClipRangeTimeline(outputId);
-      }
-      return;
-    }
+    const originalText = editSave.textContent;
     setActionLocked(true);
     editSave.disabled = true;
     editSave.textContent = "Exportando...";
@@ -2528,7 +5128,7 @@ els.outputs.addEventListener("click", async (event) => {
     } finally {
       setActionLocked(false);
       editSave.disabled = false;
-      editSave.textContent = "Salvar como novo clipe";
+      editSave.textContent = originalText;
     }
     return;
   }
@@ -2613,7 +5213,6 @@ els.outputs.addEventListener("click", async (event) => {
   if (toggle) {
     const opening = panel.hidden;
     panel.hidden = !opening;
-    saveButton.hidden = !opening;
     if (opening && editor.dataset.loaded !== "true") {
       setActionLocked(true);
       toggle.disabled = true;
@@ -2636,6 +5235,7 @@ els.outputs.addEventListener("click", async (event) => {
   save.disabled = true;
   save.textContent = "Atualizando vídeo...";
   try {
+    await ensureSubtitleEditorLoaded(outputId);
     const updatedOutput = await saveSubtitle(outputId, subtitleFromTemplate(outputId));
     if (updatedOutput) replaceOutput(updatedOutput);
     renderOutputs(state.job);
@@ -2646,7 +5246,7 @@ els.outputs.addEventListener("click", async (event) => {
   } finally {
     setActionLocked(false);
     save.disabled = false;
-    save.textContent = "Salvar e atualizar vídeo";
+    save.textContent = "Salvar alterações no clipe atual";
   }
 });
 
@@ -2692,6 +5292,17 @@ els.outputs.addEventListener("focusout", (event) => {
 });
 
 els.outputs.addEventListener("change", (event) => {
+  const nleSourceIn = event.target.closest("[data-nle-source-in]");
+  const nleSourceOut = event.target.closest("[data-nle-source-out]");
+  if (nleSourceIn || nleSourceOut) {
+    trimTimelineClip(
+      nleSourceIn?.dataset.nleSourceIn || nleSourceOut?.dataset.nleSourceOut || "",
+      nleSourceIn ? "sourceIn" : "sourceOut",
+      nleSourceIn?.value || nleSourceOut?.value || 0,
+    );
+    return;
+  }
+
   const coverTemplate = event.target.closest("[data-cover-template]");
   const coverPosition = event.target.closest("[data-cover-text-position]");
   const outputId = coverTemplate?.dataset.coverTemplate || coverPosition?.dataset.coverTextPosition || "";
@@ -2707,10 +5318,76 @@ els.outputs.addEventListener("keydown", (event) => {
   selectCoverOption(coverOption.dataset.coverOption, coverOption.dataset.coverUrl, coverOption.dataset.coverFrameUrl);
 });
 
+document.addEventListener("keydown", (event) => {
+  if (document.body.classList.contains("has-open-modal") || isEditableShortcutTarget(event.target)) return;
+
+  const outputId = currentTimelineShortcutOutputId(event.target);
+  if (!outputId) return;
+
+  const key = String(event.key || "").toLowerCase();
+  const isUndo = (event.ctrlKey || event.metaKey) && key === "z" && !event.shiftKey;
+  if (isUndo) {
+    event.preventDefault();
+    if (!undoTimelineAction(outputId)) {
+      els.outputsMeta.textContent = "Nenhuma ação da timeline para desfazer.";
+    }
+    return;
+  }
+
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    if (!deleteTimelineClip(outputId)) {
+      els.error.hidden = false;
+      els.error.textContent = "A timeline precisa manter pelo menos um trecho.";
+    } else {
+      els.error.hidden = true;
+      els.error.textContent = "";
+    }
+  }
+});
+
 els.candidates.addEventListener("change", (event) => {
   if (!event.target.closest("input[type='checkbox']")) return;
   syncCandidateSelectionState(state.job);
+  updateGlobalSubtitlePreviewCandidate();
 });
+
+function handleSubtitlePreviewClick(event) {
+  const subtitleColorOption = event.target.closest("[data-subtitle-color-option]");
+  if (subtitleColorOption) {
+    selectSubtitleColorOption(
+      subtitleColorOption.dataset.subtitleColorOption,
+      subtitleColorOption.dataset.subtitleTextColor,
+      subtitleColorOption.dataset.subtitleBorderColor,
+    );
+    return;
+  }
+
+  const subtitleStyleOption = event.target.closest("[data-subtitle-style-option]");
+  if (subtitleStyleOption) {
+    selectSubtitleStyleOption(
+      subtitleStyleOption.dataset.subtitleStyleOption,
+      subtitleStyleOption.dataset.subtitleStyle,
+    );
+    return;
+  }
+
+  const subtitleSizeOption = event.target.closest("[data-subtitle-size-option]");
+  if (subtitleSizeOption) {
+    selectSubtitleSizeOption(subtitleSizeOption.dataset.subtitleSizeOption, subtitleSizeOption.dataset.subtitleSize);
+    return;
+  }
+
+  const subtitlePositionOption = event.target.closest("[data-subtitle-position-option]");
+  if (subtitlePositionOption) {
+    selectSubtitlePositionOption(
+      subtitlePositionOption.dataset.subtitlePositionOption,
+      subtitlePositionOption.dataset.subtitlePosition,
+    );
+  }
+}
+
+candidateSubtitleSettingsElement();
 
 els.selectAllCandidates?.addEventListener("change", () => {
   const checked = Boolean(els.selectAllCandidates?.checked);
@@ -2718,10 +5395,367 @@ els.selectAllCandidates?.addEventListener("change", () => {
     if (!input.disabled) input.checked = checked;
   });
   syncCandidateSelectionState(state.job);
+  updateGlobalSubtitlePreviewCandidate();
 });
 
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || !target.closest(".nle-editor-shell")) return;
+
+    if (target.closest("[data-nle-split], [data-nle-insert], [data-nle-undo], [data-nle-audio-add]")) {
+      event.stopPropagation();
+      event.flixoTimelineHandled = true;
+      return;
+    }
+
+    const trimHandle = target.closest("[data-nle-trim-handle]");
+    if (trimHandle) {
+      const outputId = String(trimHandle.dataset.nleTrimHandle || "");
+      const clipId = String(trimHandle.dataset.nleClipId || "");
+      const kind = String(trimHandle.dataset.nleTrimKind || "");
+      const output = outputById(outputId);
+      const project = output ? timelineProjectForOutput(output) : null;
+      const clip = project ? timelineClipById(project, clipId) : null;
+      const asset = clip ? timelineAssetById(project, clip.assetId) : null;
+      const track = els.outputs.querySelector(`[data-nle-track="${CSS.escape(outputId)}"]`);
+      if (!output || !project || !clip || !track || !["start", "end"].includes(kind)) return;
+
+      stopTimelineDomEvent(event);
+      trimHandle.setPointerCapture?.(event.pointerId);
+
+      const rect = track.getBoundingClientRect();
+      const visualDuration = timelineVisualDuration(project);
+      const assetDuration = Math.max(0.1, Number(asset?.duration || clip.sourceOut || 0));
+      const initialX = event.clientX;
+      const initialSourceIn = Number(clip.sourceIn || 0);
+      const initialSourceOut = Number(clip.sourceOut || 0);
+      let frameRequested = false;
+      pushTimelineUndo(outputId);
+
+      const updateFromPointer = (pointerEvent) => {
+        pointerEvent.preventDefault();
+        const delta = ((pointerEvent.clientX - initialX) / Math.max(1, rect.width)) * visualDuration;
+        const nextValue =
+          kind === "start"
+            ? Math.max(0, Math.min(initialSourceIn + delta, initialSourceOut - 0.1))
+            : Math.max(initialSourceIn + 0.1, Math.min(initialSourceOut + delta, assetDuration));
+        trimTimelineClipById(outputId, clipId, kind === "start" ? "sourceIn" : "sourceOut", nextValue, {
+          deferRefresh: true,
+          skipUndo: true,
+        });
+
+        if (!frameRequested) {
+          frameRequested = true;
+          requestAnimationFrame(() => {
+            frameRequested = false;
+            syncTimelinePreview(outputId);
+          });
+        }
+      };
+
+      const stopDragging = () => {
+        window.removeEventListener("pointermove", updateFromPointer);
+        window.removeEventListener("pointerup", stopDragging);
+        window.removeEventListener("pointercancel", stopDragging);
+        refreshTimelineEditor(outputId);
+      };
+
+      window.addEventListener("pointermove", updateFromPointer, { passive: false });
+      window.addEventListener("pointerup", stopDragging);
+      window.addEventListener("pointercancel", stopDragging);
+      return;
+    }
+
+    const dragClip = target.closest("[data-nle-clip]");
+    if (dragClip) {
+      const outputId = String(dragClip.dataset.nleClip || "");
+      const clipId = String(dragClip.dataset.nleClipId || "");
+      const track = dragClip.closest("[data-nle-track]");
+      if (!outputById(outputId) || !clipId || !track) return;
+
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      event.flixoTimelineHandled = true;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let dragging = false;
+      dragClip.setPointerCapture?.(event.pointerId);
+
+      const targetIndexFromPointer = (clientX) => {
+        const clipButtons = [...track.querySelectorAll("[data-nle-clip]")].filter(
+          (button) => button.dataset.nleClipId !== clipId,
+        );
+        const index = clipButtons.findIndex((button) => {
+          const rect = button.getBoundingClientRect();
+          return clientX < rect.left + rect.width / 2;
+        });
+        return index >= 0 ? index : clipButtons.length;
+      };
+
+      const updateFromPointer = (pointerEvent) => {
+        const distance = Math.hypot(pointerEvent.clientX - startX, pointerEvent.clientY - startY);
+        if (!dragging && distance < 6) return;
+        if (!dragging) {
+          dragging = true;
+          dragClip.classList.add("is-dragging");
+          state.timelineSelections.set(outputId, clipId);
+        }
+        pointerEvent.preventDefault();
+        dragClip.style.transform = `translateX(${pointerEvent.clientX - startX}px)`;
+      };
+
+      const stopDragging = (pointerEvent) => {
+        window.removeEventListener("pointermove", updateFromPointer);
+        window.removeEventListener("pointerup", stopDragging);
+        window.removeEventListener("pointercancel", stopDragging);
+        dragClip.classList.remove("is-dragging");
+        dragClip.style.transform = "";
+        if (!dragging) {
+          const project = timelineProjectForOutput(outputById(outputId));
+          const clip = timelineClipById(project, clipId);
+          if (clip) {
+            state.timelineSelections.set(outputId, clip.id);
+            setTimelinePlayhead(outputId, clip.timelineStart, false);
+          }
+          return;
+        }
+        state.suppressTimelineClickUntil = Date.now() + 250;
+        moveTimelineClipToIndex(outputId, clipId, targetIndexFromPointer(pointerEvent.clientX));
+      };
+
+      window.addEventListener("pointermove", updateFromPointer, { passive: false });
+      window.addEventListener("pointerup", stopDragging);
+      window.addEventListener("pointercancel", stopDragging);
+      return;
+    }
+
+    const nleRuler = target.closest("[data-nle-ruler]");
+    if (nleRuler) {
+      const outputId = String(nleRuler.dataset.nleRuler || "");
+      if (!outputById(outputId)) return;
+      stopTimelineDomEvent(event);
+
+      const updateFromPointer = (pointerEvent) => {
+        setTimelinePlayheadFromClientX(outputId, nleRuler, pointerEvent.clientX);
+      };
+
+      const stopDragging = () => {
+        window.removeEventListener("pointermove", updateFromPointer);
+        window.removeEventListener("pointerup", stopDragging);
+        window.removeEventListener("pointercancel", stopDragging);
+      };
+
+      updateFromPointer(event);
+      window.addEventListener("pointermove", updateFromPointer);
+      window.addEventListener("pointerup", stopDragging);
+      window.addEventListener("pointercancel", stopDragging);
+      return;
+    }
+
+    const nleTrack = target.closest("[data-nle-track]");
+    if (nleTrack && !target.closest("[data-nle-clip]")) {
+      const outputId = String(nleTrack.dataset.nleTrack || "");
+      if (!outputById(outputId)) return;
+      stopTimelineDomEvent(event);
+
+      const updateFromPointer = (pointerEvent) => {
+        setTimelinePlayheadFromClientX(outputId, nleTrack, pointerEvent.clientX);
+      };
+
+      const stopDragging = () => {
+        window.removeEventListener("pointermove", updateFromPointer);
+        window.removeEventListener("pointerup", stopDragging);
+        window.removeEventListener("pointercancel", stopDragging);
+      };
+
+      updateFromPointer(event);
+      window.addEventListener("pointermove", updateFromPointer);
+      window.addEventListener("pointerup", stopDragging);
+      window.addEventListener("pointercancel", stopDragging);
+    }
+  },
+  true,
+);
+
 els.outputs.addEventListener("pointerdown", (event) => {
-  const handle = event.target.closest("[data-range-handle]");
+  if (event.flixoTimelineHandled) return;
+
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+
+  if (target.closest("[data-nle-split], [data-nle-insert], [data-nle-undo], [data-nle-audio-add]")) {
+    event.stopPropagation();
+    return;
+  }
+
+  const trimHandle = target.closest("[data-nle-trim-handle]");
+  if (trimHandle) {
+    const outputId = String(trimHandle.dataset.nleTrimHandle || "");
+    const clipId = String(trimHandle.dataset.nleClipId || "");
+    const kind = String(trimHandle.dataset.nleTrimKind || "");
+    const output = outputById(outputId);
+    const project = output ? timelineProjectForOutput(output) : null;
+    const clip = project ? timelineClipById(project, clipId) : null;
+    const asset = clip ? timelineAssetById(project, clip.assetId) : null;
+    const track = els.outputs.querySelector(`[data-nle-track="${CSS.escape(outputId)}"]`);
+    if (!output || !project || !clip || !track || !["start", "end"].includes(kind)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    trimHandle.setPointerCapture?.(event.pointerId);
+
+    const rect = track.getBoundingClientRect();
+    const visualDuration = timelineVisualDuration(project);
+    const assetDuration = Math.max(0.1, Number(asset?.duration || clip.sourceOut || 0));
+    const initialX = event.clientX;
+    const initialSourceIn = Number(clip.sourceIn || 0);
+    const initialSourceOut = Number(clip.sourceOut || 0);
+    let frameRequested = false;
+    pushTimelineUndo(outputId);
+
+    const updateFromPointer = (pointerEvent) => {
+      pointerEvent.preventDefault();
+      const delta = ((pointerEvent.clientX - initialX) / Math.max(1, rect.width)) * visualDuration;
+      const nextValue =
+        kind === "start"
+          ? Math.max(0, Math.min(initialSourceIn + delta, initialSourceOut - 0.1))
+          : Math.max(initialSourceIn + 0.1, Math.min(initialSourceOut + delta, assetDuration));
+      trimTimelineClipById(outputId, clipId, kind === "start" ? "sourceIn" : "sourceOut", nextValue, {
+        deferRefresh: true,
+        skipUndo: true,
+      });
+
+      if (!frameRequested) {
+        frameRequested = true;
+        requestAnimationFrame(() => {
+          frameRequested = false;
+          syncTimelinePreview(outputId);
+        });
+      }
+    };
+
+    const stopDragging = () => {
+      window.removeEventListener("pointermove", updateFromPointer);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+      refreshTimelineEditor(outputId);
+    };
+
+    window.addEventListener("pointermove", updateFromPointer, { passive: false });
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    return;
+  }
+
+  const dragClip = target.closest("[data-nle-clip]");
+  if (dragClip) {
+    const outputId = String(dragClip.dataset.nleClip || "");
+    const clipId = String(dragClip.dataset.nleClipId || "");
+    const track = dragClip.closest("[data-nle-track]");
+    if (!outputById(outputId) || !clipId || !track) return;
+
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragging = false;
+    dragClip.setPointerCapture?.(event.pointerId);
+
+    const targetIndexFromPointer = (clientX) => {
+      const clipButtons = [...track.querySelectorAll("[data-nle-clip]")]
+        .filter((button) => button.dataset.nleClipId !== clipId);
+      const index = clipButtons.findIndex((button) => {
+        const rect = button.getBoundingClientRect();
+        return clientX < rect.left + rect.width / 2;
+      });
+      return index >= 0 ? index : clipButtons.length;
+    };
+
+    const updateFromPointer = (pointerEvent) => {
+      const distance = Math.hypot(pointerEvent.clientX - startX, pointerEvent.clientY - startY);
+      if (!dragging && distance < 6) return;
+      if (!dragging) {
+        dragging = true;
+        dragClip.classList.add("is-dragging");
+        state.timelineSelections.set(outputId, clipId);
+      }
+      pointerEvent.preventDefault();
+      dragClip.style.transform = `translateX(${pointerEvent.clientX - startX}px)`;
+    };
+
+    const stopDragging = (pointerEvent) => {
+      window.removeEventListener("pointermove", updateFromPointer);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+      dragClip.classList.remove("is-dragging");
+      dragClip.style.transform = "";
+      if (!dragging) {
+        const project = timelineProjectForOutput(outputById(outputId));
+        const clip = timelineClipById(project, clipId);
+        if (clip) {
+          state.timelineSelections.set(outputId, clip.id);
+          setTimelinePlayhead(outputId, clip.timelineStart, false);
+        }
+        return;
+      }
+      state.suppressTimelineClickUntil = Date.now() + 250;
+      moveTimelineClipToIndex(outputId, clipId, targetIndexFromPointer(pointerEvent.clientX));
+    };
+
+    window.addEventListener("pointermove", updateFromPointer, { passive: false });
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    return;
+  }
+
+  const nleRuler = target.closest("[data-nle-ruler]");
+  if (nleRuler) {
+    const outputId = String(nleRuler.dataset.nleRuler || "");
+    if (!outputById(outputId)) return;
+    event.preventDefault();
+
+    const updateFromPointer = (pointerEvent) => {
+      setTimelinePlayheadFromClientX(outputId, nleRuler, pointerEvent.clientX);
+    };
+
+    const stopDragging = () => {
+      window.removeEventListener("pointermove", updateFromPointer);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+
+    updateFromPointer(event);
+    window.addEventListener("pointermove", updateFromPointer);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    return;
+  }
+
+  const nleTrack = target.closest("[data-nle-track]");
+  if (nleTrack && !target.closest("[data-nle-clip]")) {
+    const outputId = String(nleTrack.dataset.nleTrack || "");
+    if (!outputById(outputId)) return;
+    event.preventDefault();
+
+    const updateFromPointer = (pointerEvent) => {
+      setTimelinePlayheadFromClientX(outputId, nleTrack, pointerEvent.clientX);
+    };
+
+    const stopDragging = () => {
+      window.removeEventListener("pointermove", updateFromPointer);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+
+    updateFromPointer(event);
+    window.addEventListener("pointermove", updateFromPointer);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    return;
+  }
+
+  const handle = target.closest("[data-range-handle]");
   if (!handle) return;
   const outputId = String(handle.dataset.rangeHandle || "");
   const kind = String(handle.dataset.handleKind || "");
@@ -2770,13 +5804,22 @@ els.outputs.addEventListener("click", (event) => {
 els.outputs.addEventListener("timeupdate", (event) => {
   const preview = event.target.closest("[data-edit-preview]");
   if (!preview) return;
-  syncPreviewPlayhead(preview.dataset.editPreview || "");
+  const outputId = preview.dataset.editPreview || "";
+  if (els.outputs.querySelector(`[data-nle-editor="${CSS.escape(outputId)}"]`)) {
+    syncTimelineFromPreview(outputId);
+    return;
+  }
+  syncPreviewPlayhead(outputId);
 });
 
 els.outputs.addEventListener("loadedmetadata", (event) => {
   const preview = event.target.closest("[data-edit-preview]");
   if (!preview) return;
   const outputId = preview.dataset.editPreview || "";
+  if (els.outputs.querySelector(`[data-nle-editor="${CSS.escape(outputId)}"]`)) {
+    syncTimelinePreview(outputId);
+    return;
+  }
   const timeline = els.outputs.querySelector(`[data-range-timeline="${CSS.escape(outputId)}"]`);
   if (timeline && Number.isFinite(preview.duration) && preview.duration > 0) {
     timeline.dataset.duration = String(preview.duration);
@@ -2805,6 +5848,11 @@ els.form.addEventListener("submit", async (event) => {
       body: formData,
     }).then(readJson);
     const job = normalizeJob(payload);
+    cancelPendingUiRenders();
+    state.timelineProjects.clear();
+    state.timelineSelections.clear();
+    state.timelineUndoStacks.clear();
+    state.activeTimelineOutputId = null;
     state.jobId = job.id;
     state.job = job;
     state.renderSelectionLocked = false;
@@ -2837,8 +5885,10 @@ els.renderButton.addEventListener("click", async () => {
   els.renderButton.textContent = "Renderizando...";
   state.renderSelectionLocked = true;
   setCandidateSelectionDisabled(true);
+  hideCandidateSubtitleSettings();
   setProgress(state.job);
   try {
+    const subtitleAppearance = selectedSubtitleAppearance(GLOBAL_SUBTITLE_PREVIEW_ID);
     const payload = await fetch(`/api/podcast/jobs/${encodeURIComponent(state.jobId)}/render`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2847,6 +5897,8 @@ els.renderButton.addEventListener("click", async () => {
         burn_subtitles: els.burnSubtitles?.checked ?? true,
         remove_silence: els.removeSilence?.checked ?? true,
         artificial_cuts: els.artificialCuts?.checked ?? true,
+        clip_format: selectedClipFormat(),
+        ...subtitleAppearance,
       }),
     }).then(readJson);
     state.job = normalizeJob(payload);
@@ -2860,6 +5912,7 @@ els.renderButton.addEventListener("click", async () => {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
     setCandidateSelectionDisabled(false);
+    renderCandidates(state.job);
     syncCandidateSelectionState(state.job);
   } finally {
     if (state.job?.status !== "rendering") {
@@ -2884,6 +5937,10 @@ els.youtubeUploadAllButton.addEventListener("click", () => {
 
 els.downloadThumbnailsButton?.addEventListener("click", () => {
   downloadAllThumbnails();
+});
+
+els.downloadSubtitlesButton?.addEventListener("click", () => {
+  downloadAllSubtitles();
 });
 
 els.cancelButton?.addEventListener("click", () => {

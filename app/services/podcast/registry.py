@@ -79,6 +79,34 @@ def list_jobs(limit: int = 10, user_id: str | None = None) -> list[ClipperJob]:
     return jobs[:limit]
 
 
+def active_heavy_job(user_id: str | None, exclude_job_id: str | None = None) -> ClipperJob | None:
+    if not user_id:
+        return None
+    with _lock:
+        _load_disk_jobs()
+        jobs = list(_jobs.values())
+        db_jobs = clipper_database.list_jobs(50, user_id=user_id)
+        for db_job in db_jobs:
+            _jobs[db_job.id] = db_job
+        jobs = list(_jobs.values())
+    for job in jobs:
+        if job.id == exclude_job_id:
+            continue
+        if job.user_id != user_id:
+            continue
+        if is_heavy_job(job):
+            return job
+    return None
+
+
+def is_heavy_job(job: ClipperJob | None) -> bool:
+    if not job:
+        return False
+    if job.status in TERMINAL_STATUSES or job.status in {"ready", "done"}:
+        return False
+    return job.status in ACTIVE_STATUSES or job.current_step in ACTIVE_STEPS
+
+
 def update_job(job_id: str, updater: Callable[[ClipperJob], None]) -> ClipperJob | None:
     with _lock:
         job = _jobs.get(job_id)

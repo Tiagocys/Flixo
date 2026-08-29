@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from app.services.clipper.models import TranscriptSegment
-from app.services.clipper.subtitle_layout import compact_subtitle_segments, write_srt
+from app.services.clipper.subtitle_layout import format_subtitle_segments, normalize_subtitle_style, write_srt
 from app.services.podcast.camera import detect_speaker_camera
 from app.utils import utils
 
@@ -13,6 +13,9 @@ from app.utils import utils
 _SQUARE_TOP = int((1920 - 1080) / 2)
 _SUBTITLE_FONT_SIZE = 14
 _SUBTITLE_MARGIN_BELOW_SQUARE = 45
+_WORK_CRF = os.getenv("PODCAST_RENDER_WORK_CRF", "20")
+_OUTPUT_CRF = os.getenv("PODCAST_RENDER_OUTPUT_CRF", "20")
+_AUDIO_BITRATE = os.getenv("PODCAST_RENDER_AUDIO_BITRATE", "160k")
 
 
 def render_podcast_clip(
@@ -25,6 +28,12 @@ def render_podcast_clip(
     burn_subtitles: bool = True,
     remove_silence: bool = True,
     artificial_cuts: bool = True,
+    clip_format: str = "auto",
+    subtitle_style: str = "standard",
+    subtitle_text_color: str = "white",
+    subtitle_border_color: str = "black",
+    subtitle_size: str = "medium",
+    subtitle_position: str = "middle",
     visual_focus: dict | None = None,
 ) -> dict:
     duration = max(0.1, end - start)
@@ -43,7 +52,13 @@ def render_podcast_clip(
 
     subtitle_path = f"{base}.srt"
     subtitle_segments = _subtitle_segments(transcript, start, end, keep_ranges)
-    write_srt(compact_subtitle_segments(subtitle_segments), subtitle_path)
+    subtitle_style = normalize_subtitle_style(subtitle_style)
+    subtitle_text_color = normalize_subtitle_color(subtitle_text_color, "white")
+    subtitle_border_color = normalize_subtitle_color(subtitle_border_color, "black")
+    subtitle_size = normalize_subtitle_size(subtitle_size)
+    subtitle_position = normalize_subtitle_position(subtitle_position)
+    clip_format = normalize_clip_format(clip_format)
+    write_srt(format_subtitle_segments(subtitle_segments, "standard"), subtitle_path)
     working_duration = _probe_duration(working_path) or _ranges_duration(keep_ranges)
     visual_focus = visual_focus or detect_speaker_camera(working_path, 0.0, working_duration)
     _format_podcast_vertical(
@@ -52,8 +67,14 @@ def render_podcast_clip(
         output_path=output_path,
         title=title,
         burn_subtitles=burn_subtitles,
+        subtitle_style=subtitle_style,
+        subtitle_text_color=subtitle_text_color,
+        subtitle_border_color=subtitle_border_color,
+        subtitle_size=subtitle_size,
+        subtitle_position=subtitle_position,
         artificial_cuts=artificial_cuts,
         visual_focus=visual_focus,
+        clip_format=clip_format,
     )
     return {
         "video_path": output_path,
@@ -62,6 +83,12 @@ def render_podcast_clip(
         "removed_silence_seconds": round(duration - _ranges_duration(keep_ranges), 2),
         "visual_focus": visual_focus or {},
         "burn_subtitles": burn_subtitles,
+        "subtitle_style": subtitle_style,
+        "subtitle_text_color": subtitle_text_color,
+        "subtitle_border_color": subtitle_border_color,
+        "subtitle_size": subtitle_size,
+        "subtitle_position": subtitle_position,
+        "clip_format": clip_format,
     }
 
 
@@ -70,22 +97,46 @@ def reburn_podcast_subtitles(
     subtitle_path: str,
     output_path: str,
     burn_subtitles: bool = True,
+    subtitle_style: str = "standard",
+    subtitle_text_color: str = "white",
+    subtitle_border_color: str = "black",
+    subtitle_size: str = "medium",
+    subtitle_position: str = "middle",
 ) -> dict:
     if not os.path.isfile(camera_path):
         raise RuntimeError("Video base da camera nao encontrado. Renderize o short novamente.")
     if not os.path.isfile(subtitle_path):
         raise RuntimeError("Arquivo de legenda nao encontrado.")
+    subtitle_style = normalize_subtitle_style(subtitle_style)
+    subtitle_text_color = normalize_subtitle_color(subtitle_text_color, "white")
+    subtitle_border_color = normalize_subtitle_color(subtitle_border_color, "black")
+    subtitle_size = normalize_subtitle_size(subtitle_size)
+    subtitle_position = normalize_subtitle_position(subtitle_position)
+    render_width, render_height = _probe_resolution(camera_path)
     _apply_text_overlays(
         input_path=camera_path,
         subtitle_path=subtitle_path,
         output_path=output_path,
         title="",
         burn_subtitles=burn_subtitles,
+        subtitle_style=subtitle_style,
+        subtitle_text_color=subtitle_text_color,
+        subtitle_border_color=subtitle_border_color,
+        subtitle_size=subtitle_size,
+        subtitle_position=subtitle_position,
+        render_width=render_width,
+        render_height=render_height,
     )
     return {
         "video_path": output_path,
         "subtitle_path": subtitle_path,
         "duration": _probe_duration(output_path),
+        "burn_subtitles": burn_subtitles,
+        "subtitle_style": subtitle_style,
+        "subtitle_text_color": subtitle_text_color,
+        "subtitle_border_color": subtitle_border_color,
+        "subtitle_size": subtitle_size,
+        "subtitle_position": subtitle_position,
     }
 
 
@@ -104,11 +155,11 @@ def _cut_source(source_video: str, start: float, duration: float, output_path: s
         "-preset",
         "veryfast",
         "-crf",
-        "23",
+        _WORK_CRF,
         "-c:a",
         "aac",
         "-b:a",
-        "128k",
+        _AUDIO_BITRATE,
         "-movflags",
         "+faststart",
         output_path,
@@ -178,11 +229,11 @@ def _concat_ranges(input_path: str, ranges: list[tuple[float, float]], output_pa
                 "-preset",
                 "veryfast",
                 "-crf",
-                "23",
+                _WORK_CRF,
                 "-c:a",
                 "aac",
                 "-b:a",
-                "128k",
+                _AUDIO_BITRATE,
                 str(segment_path),
             ],
             "Falha ao cortar trecho sem silencio",
@@ -258,18 +309,33 @@ def _format_podcast_vertical(
     output_path: str,
     title: str,
     burn_subtitles: bool,
+    subtitle_style: str,
+    subtitle_text_color: str,
+    subtitle_border_color: str,
+    subtitle_size: str,
+    subtitle_position: str,
     artificial_cuts: bool,
     visual_focus: dict | None,
+    clip_format: str = "auto",
 ) -> None:
     base = os.path.splitext(output_path)[0]
     camera_path = f"{base}.camera.mp4"
-    _render_camera_base(input_path, camera_path, visual_focus, artificial_cuts)
+    clip_format = normalize_clip_format(clip_format)
+    _render_camera_base(input_path, camera_path, visual_focus, artificial_cuts, clip_format)
+    render_width, render_height = _clip_format_resolution(clip_format)
     _apply_text_overlays(
         input_path=camera_path,
         subtitle_path=subtitle_path,
         output_path=output_path,
         title=title,
         burn_subtitles=burn_subtitles,
+        subtitle_style=subtitle_style,
+        subtitle_text_color=subtitle_text_color,
+        subtitle_border_color=subtitle_border_color,
+        subtitle_size=subtitle_size,
+        subtitle_position=subtitle_position,
+        render_width=render_width,
+        render_height=render_height,
     )
 
 
@@ -278,14 +344,16 @@ def _render_camera_base(
     output_path: str,
     visual_focus: dict | None,
     artificial_cuts: bool,
+    clip_format: str = "auto",
 ) -> None:
+    clip_format = normalize_clip_format(clip_format)
     segments = visual_focus.get("segments") if isinstance(visual_focus, dict) else None
     if isinstance(segments, list) and len(segments) > 1:
-        _render_segmented_camera(input_path, output_path, segments, artificial_cuts)
+        _render_segmented_camera(input_path, output_path, segments, artificial_cuts, clip_format)
         return
 
-    focused_filter = _focused_vertical_filter(visual_focus, artificial_cuts)
-    video_filter = focused_filter or _square_center_filter()
+    focused_filter = _focused_filter_for_format(visual_focus, artificial_cuts, clip_format)
+    video_filter = focused_filter or _fallback_filter_for_format(clip_format)
     _render_camera_filter(input_path, output_path, video_filter)
 
 
@@ -307,11 +375,11 @@ def _render_camera_filter(input_path: str, output_path: str, video_filter: str) 
             "-preset",
             "veryfast",
             "-crf",
-            "24",
+            _OUTPUT_CRF,
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            _AUDIO_BITRATE,
             "-movflags",
             "+faststart",
             output_path,
@@ -325,7 +393,9 @@ def _render_segmented_camera(
     output_path: str,
     segments: list[dict],
     artificial_cuts: bool,
+    clip_format: str = "auto",
 ) -> None:
+    clip_format = normalize_clip_format(clip_format)
     temp_dir = Path(output_path).with_suffix("")
     temp_dir.mkdir(parents=True, exist_ok=True)
     segment_paths = []
@@ -334,10 +404,7 @@ def _render_segmented_camera(
         end = max(start + 0.05, float(segment.get("end") or start + 0.05))
         segment_path = temp_dir / f"camera-{index:03d}.mp4"
         segment_paths.append(segment_path)
-        if segment.get("mode") == "speaker_zoom":
-            video_filter = _focused_vertical_filter(segment, artificial_cuts) or _square_center_filter()
-        else:
-            video_filter = _square_center_filter()
+        video_filter = _focused_filter_for_format(segment, artificial_cuts, clip_format) or _fallback_filter_for_format(clip_format)
         _run(
             [
                 utils.get_ffmpeg_binary(),
@@ -359,11 +426,11 @@ def _render_segmented_camera(
                 "-preset",
                 "veryfast",
                 "-crf",
-                "24",
+                _OUTPUT_CRF,
                 "-c:a",
                 "aac",
                 "-b:a",
-                "128k",
+                _AUDIO_BITRATE,
                 str(segment_path),
             ],
             "Falha ao renderizar trecho de camera do podcast",
@@ -399,16 +466,31 @@ def _apply_text_overlays(
     output_path: str,
     title: str,
     burn_subtitles: bool,
+    subtitle_style: str = "standard",
+    subtitle_text_color: str = "white",
+    subtitle_border_color: str = "black",
+    subtitle_size: str = "medium",
+    subtitle_position: str = "middle",
+    render_width: int = 1080,
+    render_height: int = 1920,
 ) -> None:
     video_filter = "[0:v]null[v]"
     map_video = "[v]"
     if burn_subtitles and os.path.isfile(subtitle_path):
-        style = (
-            f"FontName=Liberation Sans,FontSize={_SUBTITLE_FONT_SIZE},PrimaryColour=&H00FFFFFF,"
-            "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,"
-            f"Alignment=2,MarginV={_SUBTITLE_MARGIN_BELOW_SQUARE}"
+        ass_path = str(Path(output_path).with_suffix(".subtitle.ass"))
+        render_subtitle_path = _subtitle_path_for_render(subtitle_path, output_path, subtitle_style)
+        _write_ass_subtitles(
+            render_subtitle_path,
+            ass_path,
+            subtitle_style,
+            subtitle_text_color,
+            subtitle_border_color,
+            subtitle_size,
+            subtitle_position,
+            render_width,
+            render_height,
         )
-        video_filter += f";[v]subtitles={_quote_filter_path(subtitle_path)}:force_style='{style}'[vs]"
+        video_filter += f";[v]subtitles={_quote_filter_path(ass_path)}[vs]"
         map_video = "[vs]"
 
     _run(
@@ -428,11 +510,11 @@ def _apply_text_overlays(
             "-preset",
             "veryfast",
             "-crf",
-            "24",
+            _OUTPUT_CRF,
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            _AUDIO_BITRATE,
             "-movflags",
             "+faststart",
             output_path,
@@ -441,7 +523,224 @@ def _apply_text_overlays(
     )
 
 
+def _subtitle_path_for_render(subtitle_path: str, output_path: str, subtitle_style: str) -> str:
+    style = normalize_subtitle_style(subtitle_style)
+    if style != "word":
+        return subtitle_path
+    events = [
+        TranscriptSegment(start=start, end=end, text=text)
+        for start, end, text in _read_srt_events(subtitle_path)
+    ]
+    render_path = str(Path(output_path).with_suffix(".render.srt"))
+    write_srt(format_subtitle_segments(events, style), render_path)
+    return render_path
+
+
+def _subtitle_force_style(
+    subtitle_style: str,
+    text_color: str = "white",
+    border_color: str = "black",
+    subtitle_size: str = "medium",
+    subtitle_position: str = "middle",
+) -> str:
+    primary = _ass_color(normalize_subtitle_color(text_color, "white"))
+    outline = _ass_color(normalize_subtitle_color(border_color, "black"))
+    style = normalize_subtitle_style(subtitle_style)
+    font_size = _subtitle_font_size(style, subtitle_size)
+    alignment, margin_v = _subtitle_alignment(subtitle_position)
+    if style == "word":
+        return (
+            f"FontName=Liberation Sans,FontSize={font_size},PrimaryColour={primary},"
+            f"OutlineColour={outline},BorderStyle=1,Outline=3,Shadow=0,"
+            f"Bold=1,Alignment={alignment},MarginV={margin_v}"
+        )
+    return (
+        f"FontName=Liberation Sans,FontSize={font_size},PrimaryColour={primary},"
+        f"OutlineColour={outline},BorderStyle=1,Outline=2,Shadow=0,"
+        f"Alignment={alignment},MarginV={margin_v}"
+    )
+
+
+def _write_ass_subtitles(
+    srt_path: str,
+    ass_path: str,
+    subtitle_style: str = "standard",
+    text_color: str = "white",
+    border_color: str = "black",
+    subtitle_size: str = "medium",
+    subtitle_position: str = "middle",
+    render_width: int = 1080,
+    render_height: int = 1920,
+) -> str:
+    style = normalize_subtitle_style(subtitle_style)
+    font_size = _subtitle_font_size(style, subtitle_size)
+    alignment, margin_v = _subtitle_alignment(subtitle_position, render_width, render_height)
+    outline = 8 if style == "word" else 5
+    events = _read_srt_events(srt_path)
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {render_width}",
+        f"PlayResY: {render_height}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        (
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+            "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
+        ),
+        (
+            f"Style: Default,Liberation Sans,{font_size},{_ass_color(normalize_subtitle_color(text_color, 'white'))},"
+            f"&H00FFFFFF,{_ass_color(normalize_subtitle_color(border_color, 'black'))},&H00000000,"
+            f"-1,0,0,0,100,100,0,0,1,{outline},0,{alignment},60,60,{margin_v},1"
+        ),
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for start, end, text in events:
+        lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{_ass_text(text)}")
+    Path(ass_path).write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return ass_path
+
+
+def _read_srt_events(path: str) -> list[tuple[float, float, str]]:
+    content = Path(path).read_text(encoding="utf-8", errors="ignore").replace("\r\n", "\n").strip()
+    if not content:
+        return []
+    events: list[tuple[float, float, str]] = []
+    for block in re.split(r"\n\s*\n", content):
+        lines = [line.strip("\ufeff") for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            continue
+        time_index = next((index for index, line in enumerate(lines) if "-->" in line), -1)
+        if time_index < 0:
+            continue
+        start_raw, end_raw = [part.strip() for part in lines[time_index].split("-->", 1)]
+        start = _srt_time_to_seconds(start_raw)
+        end = _srt_time_to_seconds(end_raw)
+        text = "\n".join(lines[time_index + 1 :]).strip()
+        if end > start and text:
+            events.append((start, end, text))
+    return events
+
+
+def _srt_time_to_seconds(value: str) -> float:
+    match = re.match(r"(\d+):(\d{2}):(\d{2})[,.](\d{1,3})", value.strip())
+    if not match:
+        return 0.0
+    hours, minutes, seconds, millis = match.groups()
+    return (
+        int(hours) * 3600
+        + int(minutes) * 60
+        + int(seconds)
+        + int(millis.ljust(3, "0")[:3]) / 1000
+    )
+
+
+def _ass_time(value: float) -> str:
+    total_centiseconds = max(0, int(round(value * 100)))
+    centiseconds = total_centiseconds % 100
+    total_seconds = total_centiseconds // 100
+    seconds = total_seconds % 60
+    total_minutes = total_seconds // 60
+    minutes = total_minutes % 60
+    hours = total_minutes // 60
+    return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
+
+
+def _ass_text(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("\\", "\\\\")
+        .replace("{", "\\{")
+        .replace("}", "\\}")
+        .replace("\n", r"\N")
+    )
+
+
+def normalize_subtitle_color(value: str | None, fallback: str = "white") -> str:
+    color = str(value or fallback).strip().lower()
+    return color if color in {"white", "yellow", "black", "blue", "red"} else fallback
+
+
+def normalize_subtitle_size(value: str | None, fallback: str = "medium") -> str:
+    size = str(value or fallback).strip().lower()
+    return size if size in {"small", "medium", "large"} else fallback
+
+
+def normalize_subtitle_position(value: str | None, fallback: str = "middle") -> str:
+    position = str(value or fallback).strip().lower()
+    return position if position in {"top", "middle", "bottom"} else fallback
+
+
+def normalize_clip_format(value: str | None, fallback: str = "auto") -> str:
+    clip_format = str(value or fallback).strip().lower()
+    aliases = {
+        "9:16": "vertical",
+        "portrait": "vertical",
+        "1:1": "square",
+        "16:9": "landscape",
+        "horizontal": "landscape",
+    }
+    clip_format = aliases.get(clip_format, clip_format)
+    return clip_format if clip_format in {"auto", "vertical", "square", "landscape"} else fallback
+
+
+def _subtitle_font_size(subtitle_style: str, subtitle_size: str) -> int:
+    size = normalize_subtitle_size(subtitle_size)
+    if normalize_subtitle_style(subtitle_style) == "word":
+        return {"small": 82, "medium": 102, "large": 122}[size]
+    return {"small": 52, "medium": 64, "large": 78}[size]
+
+
+def _subtitle_alignment(subtitle_position: str, render_width: int = 1080, render_height: int = 1920) -> tuple[int, int]:
+    position = normalize_subtitle_position(subtitle_position)
+    if render_width != 1080 or render_height != 1920:
+        if position == "top":
+            return 8, max(36, int(render_height * 0.08))
+        if position == "bottom":
+            return 2, max(36, int(render_height * 0.08))
+        return 5, 0
+    if position == "top":
+        # The podcast layout keeps a 1080x1080 square centered from y=420 to y=1500.
+        # Top/bottom subtitles should hug that square instead of the canvas edges.
+        return 8, 300
+    if position == "bottom":
+        return 2, 270
+    return 5, 0
+
+
+def _ass_color(color: str) -> str:
+    return {
+        "white": "&H00FFFFFF",
+        "yellow": "&H0000FFFF",
+        "black": "&H00000000",
+        "blue": "&H00F8BD38",
+        "red": "&H004444EF",
+    }[normalize_subtitle_color(color, "white")]
+
+
 def _focused_vertical_filter(visual_focus: dict | None, artificial_cuts: bool) -> str:
+    return _focused_aspect_filter(visual_focus, artificial_cuts, 1080, 1920)
+
+
+def _focused_filter_for_format(visual_focus: dict | None, artificial_cuts: bool, clip_format: str) -> str:
+    fmt = normalize_clip_format(clip_format)
+    if fmt == "square":
+        return _focused_aspect_filter(visual_focus, artificial_cuts, 1080, 1080)
+    if fmt == "landscape":
+        return _focused_aspect_filter(visual_focus, artificial_cuts, 1920, 1080)
+    return _focused_aspect_filter(visual_focus, artificial_cuts, 1080, 1920)
+
+
+def _focused_aspect_filter(
+    visual_focus: dict | None,
+    artificial_cuts: bool,
+    target_width: int,
+    target_height: int,
+) -> str:
     if not visual_focus or visual_focus.get("mode") != "speaker_zoom" or not visual_focus.get("usable"):
         return ""
     source_width = int(float(visual_focus.get("source_width") or 0))
@@ -449,7 +748,7 @@ def _focused_vertical_filter(visual_focus: dict | None, artificial_cuts: bool) -
     if source_width <= 0 or source_height <= 0:
         return ""
 
-    target_ratio = 9 / 16
+    target_ratio = target_width / target_height
     if source_width / source_height > target_ratio:
         crop_h = source_height
         crop_w = int(crop_h * target_ratio)
@@ -465,12 +764,37 @@ def _focused_vertical_filter(visual_focus: dict | None, artificial_cuts: bool) -
     crop_y = _even(max(0, min(int(center_y - crop_h / 2), source_height - crop_h)))
 
     if artificial_cuts:
-        scale = "scale=w='if(between(mod(t,10),3,7),1140,1080)':h=-2:eval=frame"
+        zoom_width = _even(int(target_width * 1.055))
+        scale = f"scale=w='if(between(mod(t,10),3,7),{zoom_width},{target_width})':h=-2:eval=frame"
         return (
             f"[0:v]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
-            f"{scale},crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1[v]"
+            f"{scale},crop={target_width}:{target_height}:(iw-{target_width})/2:(ih-{target_height})/2,setsar=1[v]"
         )
-    return f"[0:v]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920,setsar=1[v]"
+    return f"[0:v]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={target_width}:{target_height},setsar=1[v]"
+
+
+def _clip_format_resolution(clip_format: str) -> tuple[int, int]:
+    fmt = normalize_clip_format(clip_format)
+    if fmt == "square":
+        return 1080, 1080
+    if fmt == "landscape":
+        return 1920, 1080
+    return 1080, 1920
+
+
+def _fallback_filter_for_format(clip_format: str) -> str:
+    fmt = normalize_clip_format(clip_format)
+    if fmt == "auto":
+        return _square_center_filter()
+    width, height = _clip_format_resolution(fmt)
+    return _center_crop_filter(width, height)
+
+
+def _center_crop_filter(width: int, height: int) -> str:
+    return (
+        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1[v]"
+    )
 
 
 def _square_center_filter() -> str:
@@ -512,6 +836,30 @@ def _probe_duration(path: str) -> float:
         return round(float(result.stdout.strip()), 2)
     except ValueError:
         return 0.0
+
+
+def _probe_resolution(path: str) -> tuple[int, int]:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=s=x:p=0",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    match = re.search(r"(\d+)x(\d+)", result.stdout or "")
+    if not match:
+        return 1080, 1920
+    return int(match.group(1)), int(match.group(2))
 
 
 def _ranges_changed(duration: float, ranges: list[tuple[float, float]]) -> bool:

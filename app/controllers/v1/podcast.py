@@ -23,6 +23,7 @@ from app.services.podcast.pipeline import (
     render_job,
     restore_job_from_metadata,
     update_output_metadata,
+    update_output_timeline,
     update_output_subtitle,
     update_output_subtitle_mode,
 )
@@ -36,14 +37,30 @@ class PodcastRenderRequest(BaseModel):
     burn_subtitles: bool = True
     remove_silence: bool = True
     artificial_cuts: bool = True
+    clip_format: str = Field(default="auto", pattern="^(auto|vertical|square|landscape)$")
+    subtitle_style: str = Field(default="standard", pattern="^(standard|word)$")
+    subtitle_text_color: str = Field(default="white", pattern="^(white|yellow|black|blue|red)$")
+    subtitle_border_color: str = Field(default="black", pattern="^(black|white|yellow|blue|red)$")
+    subtitle_size: str = Field(default="medium", pattern="^(small|medium|large)$")
+    subtitle_position: str = Field(default="middle", pattern="^(top|middle|bottom)$")
 
 
 class PodcastSubtitleUpdateRequest(BaseModel):
     subtitle: str = Field(min_length=1)
+    subtitle_style: str | None = Field(default=None, pattern="^(standard|word)$")
+    subtitle_text_color: str | None = Field(default=None, pattern="^(white|yellow|black|blue|red)$")
+    subtitle_border_color: str | None = Field(default=None, pattern="^(black|white|yellow|blue|red)$")
+    subtitle_size: str | None = Field(default=None, pattern="^(small|medium|large)$")
+    subtitle_position: str | None = Field(default=None, pattern="^(top|middle|bottom)$")
 
 
 class PodcastSubtitleModeRequest(BaseModel):
     burn_subtitles: bool = True
+    subtitle_style: str | None = Field(default=None, pattern="^(standard|word)$")
+    subtitle_text_color: str | None = Field(default=None, pattern="^(white|yellow|black|blue|red)$")
+    subtitle_border_color: str | None = Field(default=None, pattern="^(black|white|yellow|blue|red)$")
+    subtitle_size: str | None = Field(default=None, pattern="^(small|medium|large)$")
+    subtitle_position: str | None = Field(default=None, pattern="^(top|middle|bottom)$")
 
 
 class PodcastOutputMetadataRequest(BaseModel):
@@ -57,9 +74,14 @@ class PodcastOutputMetadataRequest(BaseModel):
 
 class PodcastOutputEditRequest(BaseModel):
     trim_start: float = Field(default=0, ge=0)
-    trim_end: float = Field(gt=0)
+    trim_end: float | None = Field(default=None, gt=0)
     append_output_id: str | None = None
     append_position: str = Field(default="after", pattern="^(before|after)$")
+    timeline_project: dict | None = None
+
+
+class PodcastTimelineUpdateRequest(BaseModel):
+    timeline_project: dict
 
 
 class PodcastCoverDownloadItem(BaseModel):
@@ -73,9 +95,31 @@ class PodcastCoverDownloadRequest(BaseModel):
     covers: list[PodcastCoverDownloadItem] = Field(default_factory=list)
 
 
+class PodcastSubtitleDownloadItem(BaseModel):
+    output_id: str
+    subtitle_key: str | None = None
+    subtitle_url: str | None = None
+    filename: str | None = None
+
+
+class PodcastSubtitleDownloadRequest(BaseModel):
+    subtitles: list[PodcastSubtitleDownloadItem] = Field(default_factory=list)
+
+
 def _ensure_owner(job, user_id: str | None):
     if user_id and job.user_id and job.user_id != user_id:
         raise HttpException(task_id=job.id, status_code=404, message="Podcast job nao encontrado.")
+
+
+def _ensure_no_heavy_job(user_id: str | None, task_id: str, exclude_job_id: str | None = None):
+    active_job = registry.active_heavy_job(user_id, exclude_job_id=exclude_job_id)
+    if active_job:
+        raise HttpException(
+            task_id=task_id,
+            status_code=409,
+            message="Você já tem um projeto em processamento. Aguarde terminar ou interrompa o processo atual.",
+            data={"active_job_id": active_job.id, "active_step": active_job.current_step, "active_status": active_job.status},
+        )
 
 
 def _job_title(job) -> str:
@@ -129,6 +173,7 @@ async def create_podcast_job(
     x_flixo_user_id: Annotated[str | None, Header(alias="X-Flixo-User-Id")] = None,
 ):
     job_id = utils.get_uuid()
+    _ensure_no_heavy_job(x_flixo_user_id, job_id)
     output_dir = job_dir(job_id)
     source_file = None
     original_name = None
@@ -218,6 +263,7 @@ def render_podcast_job(
         raise HttpException(task_id=job_id, status_code=409, message="A analise ainda nao esta pronta.")
     if not body.selected_ids:
         raise HttpException(task_id=job_id, status_code=400, message="Selecione pelo menos um corte.")
+    _ensure_no_heavy_job(x_flixo_user_id, job_id, exclude_job_id=job_id)
 
     background_tasks.add_task(
         render_job,
@@ -226,6 +272,12 @@ def render_podcast_job(
         body.burn_subtitles,
         body.remove_silence,
         body.artificial_cuts,
+        body.clip_format,
+        body.subtitle_style,
+        body.subtitle_text_color,
+        body.subtitle_border_color,
+        body.subtitle_size,
+        body.subtitle_position,
     )
     return _public_response(job_id, user_id=x_flixo_user_id)
 
@@ -259,7 +311,16 @@ def update_podcast_output_subtitle(
         raise HttpException(task_id=job_id, status_code=404, message="Podcast job nao encontrado.")
     _ensure_owner(job, x_flixo_user_id)
     try:
-        output = update_output_subtitle(job_id, output_id, body.subtitle)
+        output = update_output_subtitle(
+            job_id,
+            output_id,
+            body.subtitle,
+            body.subtitle_style,
+            body.subtitle_text_color,
+            body.subtitle_border_color,
+            body.subtitle_size,
+            body.subtitle_position,
+        )
     except RuntimeError as exc:
         raise HttpException(task_id=job_id, status_code=400, message=str(exc))
     return utils.get_response(200, {"output": output})
@@ -277,7 +338,16 @@ def update_podcast_output_subtitle_mode(
         raise HttpException(task_id=job_id, status_code=404, message="Podcast job nao encontrado.")
     _ensure_owner(job, x_flixo_user_id)
     try:
-        output = update_output_subtitle_mode(job_id, output_id, body.burn_subtitles)
+        output = update_output_subtitle_mode(
+            job_id,
+            output_id,
+            body.burn_subtitles,
+            body.subtitle_style,
+            body.subtitle_text_color,
+            body.subtitle_border_color,
+            body.subtitle_size,
+            body.subtitle_position,
+        )
     except RuntimeError as exc:
         raise HttpException(task_id=job_id, status_code=400, message=str(exc))
     return utils.get_response(200, {"output": output})
@@ -363,6 +433,59 @@ def download_podcast_covers(
     )
 
 
+@router.post("/podcast/jobs/{job_id}/subtitles/download", summary="Download selected podcast subtitles as zip")
+def download_podcast_subtitles(
+    job_id: str,
+    body: PodcastSubtitleDownloadRequest,
+    background_tasks: BackgroundTasks,
+    x_flixo_user_id: Annotated[str | None, Header(alias="X-Flixo-User-Id")] = None,
+):
+    job = registry.get_job(job_id) or restore_job_from_metadata(job_id)
+    if not job:
+        raise HttpException(task_id=job_id, status_code=404, message="Podcast job nao encontrado.")
+    _ensure_owner(job, x_flixo_user_id)
+
+    subtitles = body.subtitles or [
+        PodcastSubtitleDownloadItem(output_id=str(output.get("id") or ""))
+        for output in job.outputs
+        if output.get("id")
+    ]
+    if not subtitles:
+        raise HttpException(task_id=job_id, status_code=400, message="Nenhuma legenda selecionada.")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="flixo-subtitles-"))
+    zip_path = temp_dir / f"legendas-{job_id}.zip"
+    outputs_by_id = {str(output.get("id") or ""): output for output in job.outputs or []}
+    added = 0
+
+    try:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for index, subtitle in enumerate(subtitles, start=1):
+                output = outputs_by_id.get(str(subtitle.output_id or ""))
+                if not output:
+                    continue
+                path = _resolve_subtitle_file(job_id, output, subtitle, temp_dir)
+                if not path or not path.is_file():
+                    continue
+                filename = _safe_subtitle_filename(subtitle.filename, output, index)
+                archive.write(path, filename)
+                added += 1
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HttpException(task_id=job_id, status_code=400, message=f"Falha ao preparar legendas: {exc}")
+
+    if not added:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HttpException(task_id=job_id, status_code=404, message="Nenhuma legenda encontrada.")
+
+    background_tasks.add_task(shutil.rmtree, temp_dir, True)
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=f"legendas-{job_id}.zip",
+    )
+
+
 def _resolve_cover_file(
     job_id: str,
     output: dict,
@@ -417,6 +540,52 @@ def _safe_cover_filename(value: str | None, output: dict, index: int) -> str:
     return f"{str(index).zfill(2)}-{normalized or f'miniatura-{index}'}.jpg"
 
 
+def _resolve_subtitle_file(
+    job_id: str,
+    output: dict,
+    subtitle: PodcastSubtitleDownloadItem,
+    temp_dir: Path,
+) -> Path | None:
+    path = _local_subtitle_file(job_id, output)
+    if path:
+        return path
+
+    key = _safe_subtitle_key(job_id, subtitle.subtitle_key or str(output.get("subtitle_key") or output.get("r2_subtitle_key") or ""))
+    if not key:
+        return None
+    target = temp_dir / f"{Path(key).stem}.srt"
+    return target if r2_storage.download_to_file(key, target) else None
+
+
+def _local_subtitle_file(job_id: str, output: dict) -> Path | None:
+    base = Path(job_dir(job_id)).resolve()
+    value = str(output.get("subtitle_path") or "")
+    if not value:
+        return None
+    path = Path(value).resolve()
+    if path.is_file() and base in path.parents:
+        return path
+    return None
+
+
+def _safe_subtitle_key(job_id: str, key: str | None) -> str | None:
+    value = str(key or "").strip().lstrip("/")
+    prefix = f"podcast/{job_id}/outputs/"
+    if not value.startswith(prefix) or ".." in Path(value).parts:
+        return None
+    if not value.lower().endswith(".srt"):
+        return None
+    return value
+
+
+def _safe_subtitle_filename(value: str | None, output: dict, index: int) -> str:
+    fallback = str(output.get("title") or output.get("id") or f"legenda-{index}")
+    name = str(value or fallback).strip().lower()
+    normalized = "".join(char if char.isalnum() else "-" for char in name)
+    normalized = "-".join(part for part in normalized.split("-") if part)
+    return f"{str(index).zfill(2)}-{normalized or f'legenda-{index}'}.srt"
+
+
 @router.post("/podcast/jobs/{job_id}/outputs/{output_id}/edit", summary="Create an edited podcast short")
 def edit_podcast_output_endpoint(
     job_id: str,
@@ -436,7 +605,26 @@ def edit_podcast_output_endpoint(
             trim_end=body.trim_end,
             append_output_id=body.append_output_id,
             append_position=body.append_position,
+            timeline_project=body.timeline_project,
         )
+    except RuntimeError as exc:
+        raise HttpException(task_id=job_id, status_code=400, message=str(exc))
+    return utils.get_response(200, {"output": output})
+
+
+@router.put("/podcast/jobs/{job_id}/outputs/{output_id}/timeline", summary="Save podcast output timeline JSON")
+def update_podcast_output_timeline(
+    job_id: str,
+    output_id: str,
+    body: PodcastTimelineUpdateRequest,
+    x_flixo_user_id: Annotated[str | None, Header(alias="X-Flixo-User-Id")] = None,
+):
+    job = registry.get_job(job_id) or restore_job_from_metadata(job_id)
+    if not job:
+        raise HttpException(task_id=job_id, status_code=404, message="Podcast job nao encontrado.")
+    _ensure_owner(job, x_flixo_user_id)
+    try:
+        output = update_output_timeline(job_id, output_id, body.timeline_project)
     except RuntimeError as exc:
         raise HttpException(task_id=job_id, status_code=400, message=str(exc))
     return utils.get_response(200, {"output": output})

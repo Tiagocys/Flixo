@@ -6,7 +6,7 @@
     <title>Clipper</title>
     <meta
       name="description"
-      content="Transforme vídeos longos e links do YouTube em shorts editáveis com cortes, legendas e capas."
+      content="Transforme vídeos longos e links do YouTube em cortes editáveis com legendas e capas."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -21,7 +21,7 @@
       <header class="clipper-topbar">
         <div>
           <p>Clipper</p>
-          <h1>Crie shorts a partir de um vídeo do YouTube.</h1>
+          <h1>Crie cortes a partir de um vídeo do YouTube.</h1>
         </div>
         <nav aria-label="Navegação">
           <a href="/">Início</a>
@@ -50,7 +50,7 @@
           <div class="prompt-actions">
             <div class="helper">
               <span class="helper-title">Fluxo padrão</span>
-              <span>transcrição → melhores cortes → shorts editáveis</span>
+              <span>transcrição → melhores momentos → cortes editáveis</span>
             </div>
             <button type="submit" id="podcast-submit-button">Criar projeto</button>
           </div>
@@ -64,6 +64,13 @@
             </div>
             <div class="status-actions">
               <div class="status-pill" id="podcast-status-pill">Parado</div>
+              <div class="youtube-account-status">
+                <p id="podcast-youtube-status-meta">YouTube não conectado.</p>
+                <button type="button" id="podcast-youtube-connect-button" class="secondary-button youtube-connect-button">
+                  <span class="youtube-button-icon" aria-hidden="true"></span>
+                  <span>Conectar YouTube</span>
+                </button>
+              </div>
               <button type="button" id="podcast-cancel-button" class="secondary-button danger-button" hidden>
                 Interromper processo
               </button>
@@ -98,6 +105,7 @@
         </section>
 
         <section class="panel clipper-candidates-panel" hidden>
+          <div id="podcast-candidate-subtitle-settings"></div>
           <div class="panel-header">
             <div>
               <h2>Cortes sugeridos</h2>
@@ -119,55 +127,67 @@
         </section>
 
         <section class="panel clipper-outputs-panel" hidden>
-          <div class="panel-header">
-            <div>
-              <h2>Shorts renderizados</h2>
-              <p id="podcast-outputs-meta">Renderize cortes para ver seus shorts prontos.</p>
-              <p id="podcast-youtube-status-meta">YouTube não conectado.</p>
+          <div class="youtube-bulk-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Cortes renderizados</h2>
+                <p id="podcast-outputs-meta">Renderize cortes para ver seus cortes prontos.</p>
+              </div>
+              <div class="output-header-actions">
+                <button type="button" id="podcast-youtube-upload-all-button" class="secondary-button" disabled>
+                  Enviar todos
+                </button>
+                <button type="button" id="podcast-download-thumbnails-button" class="secondary-button" disabled>
+                  Baixar miniaturas
+                </button>
+                <button type="button" id="podcast-download-subtitles-button" class="secondary-button" disabled>
+                  Baixar legendas
+                </button>
+              </div>
             </div>
-            <div class="output-header-actions">
-              <button type="button" id="podcast-youtube-connect-button" class="secondary-button youtube-connect-button">
-                <span class="youtube-button-icon" aria-hidden="true"></span>
-                <span>Conectar YouTube</span>
-              </button>
-              <button type="button" id="podcast-youtube-upload-all-button" class="secondary-button" disabled>
-                Enviar todos
-              </button>
-              <button type="button" id="podcast-download-thumbnails-button" class="secondary-button" disabled>
-                Baixar miniaturas
-              </button>
-            </div>
-          </div>
-          <div class="youtube-settings">
-            <div class="field">
-              <label for="podcast-youtube-privacy">Visibilidade</label>
-              <select id="podcast-youtube-privacy">
-                <option value="private" selected>Privado</option>
-                <option value="unlisted">Não listado</option>
-                <option value="public">Público</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="podcast-youtube-video-language">Língua do vídeo</label>
-              <select id="podcast-youtube-video-language">
-                <option value="pt-BR" selected>Português (Brasil)</option>
-                <option value="pt-PT">Português (Portugal)</option>
-                <option value="en-US">Inglês (EUA)</option>
-                <option value="es">Espanhol</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="podcast-youtube-caption-language">Língua da legenda</label>
-              <select id="podcast-youtube-caption-language">
-                <option value="pt-BR" selected>Português (Brasil)</option>
-                <option value="pt-PT">Português (Portugal)</option>
-                <option value="en-US">Inglês (EUA)</option>
-                <option value="es">Espanhol</option>
-              </select>
+            <div class="youtube-settings">
+              <div class="field">
+                <label for="podcast-youtube-privacy">Visibilidade</label>
+                <select id="podcast-youtube-privacy">
+                  <option value="private" selected>Privado</option>
+                  <option value="unlisted">Não listado</option>
+                  <option value="public">Público</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="podcast-youtube-video-language">Língua do vídeo</label>
+                <select id="podcast-youtube-video-language">
+                  <option value="pt-BR" selected>Português (Brasil)</option>
+                  <option value="pt-PT">Português (Portugal)</option>
+                  <option value="en-US">Inglês (EUA)</option>
+                  <option value="es">Espanhol</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="podcast-youtube-category">Categoria</label>
+                <select id="podcast-youtube-category">
+                  <option value="" selected>Nenhum</option>
+                  <option value="15">Animais</option>
+                  <option value="2">Automóveis</option>
+                  <option value="28">Ciência e tecnologia</option>
+                  <option value="23">Comédia</option>
+                  <option value="27">Educação</option>
+                  <option value="24">Entretenimento</option>
+                  <option value="17">Esportes</option>
+                  <option value="1">Filme e animação</option>
+                  <option value="26">Instruções e estilo</option>
+                  <option value="20">Jogos</option>
+                  <option value="10">Música</option>
+                  <option value="25">Notícias e política</option>
+                  <option value="22">Pessoas e blogs</option>
+                  <option value="29">Sem fins lucrativos e ativismo</option>
+                  <option value="19">Viagens e eventos</option>
+                </select>
+              </div>
             </div>
           </div>
           <div id="podcast-outputs" class="clipper-outputs">
-            <div class="empty-state">Nenhum short renderizado ainda.</div>
+            <div class="empty-state">Nenhum corte renderizado ainda.</div>
           </div>
         </section>
 
@@ -198,6 +218,6 @@
       </section>
     </div>
     <script src="/auth.js" defer></script>
-    <script src="/podcast.js" defer></script>
+    <script src="/podcast.js?v=nle-rollback-20260828" defer></script>
   </body>
 </html>

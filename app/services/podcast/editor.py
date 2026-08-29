@@ -6,10 +6,19 @@ from pathlib import Path
 from typing import Any
 
 from app.services.clipper.models import TranscriptSegment
-from app.services.clipper.subtitle_layout import compact_subtitle_segments, write_srt
+from app.services.clipper.subtitle_layout import format_subtitle_segments, normalize_subtitle_style, write_srt
 from app.services.clipper.transcriber import parse_srt
-from app.services.podcast.renderer import reburn_podcast_subtitles
+from app.services.podcast.renderer import (
+    normalize_subtitle_color,
+    normalize_subtitle_position,
+    normalize_subtitle_size,
+    reburn_podcast_subtitles,
+)
 from app.utils import utils
+
+
+_EDIT_CRF = os.getenv("PODCAST_EDIT_CRF", "20")
+_EDIT_AUDIO_BITRATE = os.getenv("PODCAST_EDIT_AUDIO_BITRATE", "160k")
 
 
 def edit_podcast_output(
@@ -17,10 +26,14 @@ def edit_podcast_output(
     output: dict[str, Any],
     outputs: list[dict[str, Any]],
     trim_start: float,
-    trim_end: float,
+    trim_end: float | None,
     append_output_id: str | None = None,
     append_position: str = "after",
+    timeline_project: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if timeline_project:
+        return edit_podcast_timeline_output(job_id, output, outputs, timeline_project)
+
     video_path = Path(str(output.get("video_path") or "")).resolve()
     subtitle_path = Path(str(output.get("subtitle_path") or "")).resolve()
     camera_path = _camera_path(video_path)
@@ -31,7 +44,7 @@ def edit_podcast_output(
 
     duration = _probe_duration(str(camera_path)) or float(output.get("duration") or 0)
     start = max(0.0, min(float(trim_start), max(0.0, duration - 0.1)))
-    end = max(start + 0.1, min(float(trim_end), duration))
+    end = max(start + 0.1, min(float(trim_end or duration), duration))
     if end - start < 1.0:
         raise RuntimeError("O corte editado precisa ter pelo menos 1 segundo.")
 
@@ -86,13 +99,23 @@ def edit_podcast_output(
         )
         offset += part_duration
 
-    write_srt(compact_subtitle_segments(subtitle_segments), str(edit_subtitle_path))
+    subtitle_style = normalize_subtitle_style(str(output.get("subtitle_style") or "standard"))
+    subtitle_text_color = normalize_subtitle_color(str(output.get("subtitle_text_color") or "white"), "white")
+    subtitle_border_color = normalize_subtitle_color(str(output.get("subtitle_border_color") or "black"), "black")
+    subtitle_size = normalize_subtitle_size(str(output.get("subtitle_size") or "medium"))
+    subtitle_position = normalize_subtitle_position(str(output.get("subtitle_position") or "middle"))
+    write_srt(format_subtitle_segments(subtitle_segments, "standard"), str(edit_subtitle_path))
     burn_subtitles = bool(output.get("burn_subtitles", True))
     render_result = reburn_podcast_subtitles(
         camera_path=str(edit_camera_path),
         subtitle_path=str(edit_subtitle_path),
         output_path=str(edit_video_path),
         burn_subtitles=burn_subtitles,
+        subtitle_style=subtitle_style,
+        subtitle_text_color=subtitle_text_color,
+        subtitle_border_color=subtitle_border_color,
+        subtitle_size=subtitle_size,
+        subtitle_position=subtitle_position,
     )
 
     edited_duration = render_result.get("duration") or _probe_duration(str(edit_video_path))
@@ -111,6 +134,11 @@ def edit_podcast_output(
         "video_url": _task_url(str(edit_video_path)),
         "subtitle_url": _task_url(str(edit_subtitle_path)),
         "burn_subtitles": burn_subtitles,
+        "subtitle_style": subtitle_style,
+        "subtitle_text_color": subtitle_text_color,
+        "subtitle_border_color": subtitle_border_color,
+        "subtitle_size": subtitle_size,
+        "subtitle_position": subtitle_position,
         "edited_from": output.get("id"),
         "edited_at": int(time.time()),
         "subtitle_edited_at": int(time.time()),
@@ -121,6 +149,258 @@ def edit_podcast_output(
             "append_position": position if append_output else "",
         },
     }
+
+
+def edit_podcast_timeline_output(
+    job_id: str,
+    output: dict[str, Any],
+    outputs: list[dict[str, Any]],
+    timeline_project: dict[str, Any],
+) -> dict[str, Any]:
+    project = _normalize_timeline_project(timeline_project, output, outputs)
+    clips = _timeline_video_clips(project)
+    if not clips:
+        raise RuntimeError("Timeline sem clipes de video.")
+
+    video_path = Path(str(output.get("video_path") or "")).resolve()
+    base = video_path.with_suffix("")
+    version = f"edit-{int(time.time())}"
+    edit_base = base.parent / f"{base.name}-{version}"
+    edit_camera_path = edit_base.with_suffix(".camera.mp4")
+    edit_video_path = edit_base.with_suffix(".mp4")
+    edit_subtitle_path = edit_base.with_suffix(".srt")
+    temp_dir = edit_base.parent / f"{edit_base.name}.parts"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    outputs_by_id = {str(item.get("id") or ""): dict(item) for item in outputs}
+    output_id = str(output.get("id") or "")
+    if output_id:
+        outputs_by_id[output_id] = dict(output)
+
+    parts: list[tuple[str, list[TranscriptSegment]]] = []
+    offset = 0.0
+    for index, clip in enumerate(clips, start=1):
+        asset = _timeline_asset(project, str(clip.get("assetId") or ""))
+        asset_output = _output_for_asset(asset, outputs_by_id)
+        asset_video_path = Path(str(asset_output.get("video_path") or "")).resolve()
+        asset_subtitle_path = Path(str(asset_output.get("subtitle_path") or "")).resolve()
+        asset_camera_path = _camera_path(asset_video_path)
+        if not asset_camera_path.is_file():
+            raise RuntimeError("Um asset da timeline nao possui video base sem legenda.")
+        if not asset_subtitle_path.is_file():
+            raise RuntimeError("Um asset da timeline nao possui arquivo SRT.")
+
+        asset_duration = _probe_duration(str(asset_camera_path)) or float(asset_output.get("duration") or 0)
+        source_in = max(0.0, min(float(clip.get("sourceIn") or 0), max(0.0, asset_duration - 0.1)))
+        source_out = max(source_in + 0.1, min(float(clip.get("sourceOut") or asset_duration), asset_duration))
+        duration = source_out - source_in
+        if duration < 0.1:
+            continue
+
+        part_path = temp_dir / f"part-{index}.mp4"
+        _cut_video(str(asset_camera_path), source_in, duration, str(part_path))
+        raw_segments = _trim_srt_segments(asset_subtitle_path, source_in, source_out)
+        shifted_segments = [
+            TranscriptSegment(
+                start=round(segment.start + offset, 3),
+                end=round(segment.end + offset, 3),
+                text=segment.text,
+            )
+            for segment in raw_segments
+        ]
+        parts.append((str(part_path), shifted_segments))
+        offset += _probe_duration(str(part_path)) or duration
+
+    if not parts or offset < 1.0:
+        raise RuntimeError("A composicao editada precisa ter pelo menos 1 segundo.")
+
+    if len(parts) == 1:
+        os.replace(parts[0][0], edit_camera_path)
+    else:
+        _concat_videos([path for path, _segments in parts], str(edit_camera_path))
+
+    subtitle_segments: list[TranscriptSegment] = []
+    for _path, segments in parts:
+        subtitle_segments.extend(segments)
+
+    subtitle_style = normalize_subtitle_style(str(output.get("subtitle_style") or "standard"))
+    subtitle_text_color = normalize_subtitle_color(str(output.get("subtitle_text_color") or "white"), "white")
+    subtitle_border_color = normalize_subtitle_color(str(output.get("subtitle_border_color") or "black"), "black")
+    subtitle_size = normalize_subtitle_size(str(output.get("subtitle_size") or "medium"))
+    subtitle_position = normalize_subtitle_position(str(output.get("subtitle_position") or "middle"))
+    write_srt(format_subtitle_segments(subtitle_segments, "standard"), str(edit_subtitle_path))
+    burn_subtitles = bool(output.get("burn_subtitles", True))
+    render_result = reburn_podcast_subtitles(
+        camera_path=str(edit_camera_path),
+        subtitle_path=str(edit_subtitle_path),
+        output_path=str(edit_video_path),
+        burn_subtitles=burn_subtitles,
+        subtitle_style=subtitle_style,
+        subtitle_text_color=subtitle_text_color,
+        subtitle_border_color=subtitle_border_color,
+        subtitle_size=subtitle_size,
+        subtitle_position=subtitle_position,
+    )
+
+    edited_duration = render_result.get("duration") or _probe_duration(str(edit_video_path))
+    title = str(output.get("title") or "Podcast short").strip()
+    cover_title = _clean_edited_suffix(str(output.get("cover_title") or title).strip())
+    return {
+        **output,
+        "id": f"{output.get('id')}-{version}",
+        "title": f"{title} (editado)"[:90],
+        "cover_title": cover_title[:80],
+        "duration": edited_duration,
+        "source_duration": edited_duration,
+        "removed_silence_seconds": output.get("removed_silence_seconds", 0),
+        "video_path": str(edit_video_path),
+        "subtitle_path": str(edit_subtitle_path),
+        "video_url": _task_url(str(edit_video_path)),
+        "subtitle_url": _task_url(str(edit_subtitle_path)),
+        "burn_subtitles": burn_subtitles,
+        "subtitle_style": subtitle_style,
+        "subtitle_text_color": subtitle_text_color,
+        "subtitle_border_color": subtitle_border_color,
+        "subtitle_size": subtitle_size,
+        "subtitle_position": subtitle_position,
+        "edited_from": output.get("id"),
+        "edited_at": int(time.time()),
+        "subtitle_edited_at": int(time.time()),
+        "timeline_project": project,
+        "edit": {
+            "type": "timeline",
+            "clips": len(clips),
+            "duration": round(float(edited_duration or offset), 3),
+        },
+    }
+
+
+def _normalize_timeline_project(
+    project: dict[str, Any],
+    output: dict[str, Any],
+    outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    assets = project.get("assets") if isinstance(project.get("assets"), list) else []
+    tracks = project.get("tracks") if isinstance(project.get("tracks"), list) else []
+    normalized_assets = []
+    known_output_ids = {str(item.get("id") or "") for item in outputs}
+    known_output_ids.add(str(output.get("id") or ""))
+
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = str(asset.get("id") or "").strip()
+        source_output_id = str(asset.get("sourceOutputId") or asset.get("source_output_id") or "").strip()
+        if not asset_id or not source_output_id or source_output_id not in known_output_ids:
+            continue
+        normalized_assets.append(
+            {
+                "id": asset_id,
+                "type": "video",
+                "name": str(asset.get("name") or source_output_id)[:120],
+                "duration": round(max(0.0, float(asset.get("duration") or 0)), 3),
+                "sourceOutputId": source_output_id,
+                "videoUrl": str(asset.get("videoUrl") or asset.get("video_url") or ""),
+                "subtitleUrl": str(asset.get("subtitleUrl") or asset.get("subtitle_url") or ""),
+            }
+        )
+
+    if not normalized_assets:
+        output_id = str(output.get("id") or "asset")
+        normalized_assets = [
+            {
+                "id": f"asset-{output_id}",
+                "type": "video",
+                "name": str(output.get("title") or "Clipe")[:120],
+                "duration": round(max(0.0, float(output.get("duration") or 0)), 3),
+                "sourceOutputId": output_id,
+                "videoUrl": str(output.get("video_url") or ""),
+                "subtitleUrl": str(output.get("subtitle_url") or ""),
+            }
+        ]
+
+    asset_ids = {asset["id"] for asset in normalized_assets}
+    normalized_tracks = []
+    for track in tracks:
+        if not isinstance(track, dict):
+            continue
+        track_id = str(track.get("id") or "v1").strip() or "v1"
+        track_type = str(track.get("type") or "video").strip() or "video"
+        clips = track.get("clips") if isinstance(track.get("clips"), list) else []
+        normalized_clips = []
+        for clip in clips:
+            if not isinstance(clip, dict):
+                continue
+            asset_id = str(clip.get("assetId") or "").strip()
+            if asset_id not in asset_ids:
+                continue
+            source_in = max(0.0, float(clip.get("sourceIn") or 0))
+            source_out = max(source_in + 0.1, float(clip.get("sourceOut") or source_in + float(clip.get("duration") or 0)))
+            duration = max(0.1, source_out - source_in)
+            normalized_clips.append(
+                {
+                    "id": str(clip.get("id") or f"clip-{len(normalized_clips) + 1}"),
+                    "assetId": asset_id,
+                    "sourceIn": round(source_in, 3),
+                    "sourceOut": round(source_out, 3),
+                    "timelineStart": round(max(0.0, float(clip.get("timelineStart") or 0)), 3),
+                    "duration": round(duration, 3),
+                }
+            )
+        normalized_tracks.append({"id": track_id, "type": track_type, "clips": normalized_clips})
+
+    if not normalized_tracks:
+        asset = normalized_assets[0]
+        duration = max(0.1, float(asset.get("duration") or 0))
+        normalized_tracks = [
+            {
+                "id": "v1",
+                "type": "video",
+                "clips": [
+                    {
+                        "id": "clip-1",
+                        "assetId": asset["id"],
+                        "sourceIn": 0.0,
+                        "sourceOut": round(duration, 3),
+                        "timelineStart": 0.0,
+                        "duration": round(duration, 3),
+                    }
+                ],
+            }
+        ]
+
+    return {
+        "version": 1,
+        "assets": normalized_assets,
+        "tracks": normalized_tracks,
+        "playhead": round(max(0.0, float(project.get("playhead") or 0)), 3),
+    }
+
+
+def _timeline_video_clips(project: dict[str, Any]) -> list[dict[str, Any]]:
+    tracks = project.get("tracks") if isinstance(project.get("tracks"), list) else []
+    for track in tracks:
+        if not isinstance(track, dict) or str(track.get("type") or "video") != "video":
+            continue
+        clips = track.get("clips") if isinstance(track.get("clips"), list) else []
+        return sorted((dict(clip) for clip in clips if isinstance(clip, dict)), key=lambda clip: float(clip.get("timelineStart") or 0))
+    return []
+
+
+def _timeline_asset(project: dict[str, Any], asset_id: str) -> dict[str, Any]:
+    assets = project.get("assets") if isinstance(project.get("assets"), list) else []
+    for asset in assets:
+        if isinstance(asset, dict) and str(asset.get("id") or "") == asset_id:
+            return asset
+    raise RuntimeError("Asset da timeline nao encontrado.")
+
+
+def _output_for_asset(asset: dict[str, Any], outputs_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    output_id = str(asset.get("sourceOutputId") or asset.get("source_output_id") or "")
+    output = outputs_by_id.get(output_id)
+    if not output:
+        raise RuntimeError("Output de origem do asset nao encontrado.")
+    return output
 
 
 def _clean_edited_suffix(value: str) -> str:
@@ -179,11 +459,11 @@ def _cut_video(input_path: str, start: float, duration: float, output_path: str)
             "-preset",
             "veryfast",
             "-crf",
-            "24",
+            _EDIT_CRF,
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            _EDIT_AUDIO_BITRATE,
             "-movflags",
             "+faststart",
             output_path,
@@ -212,11 +492,11 @@ def _concat_videos(paths: list[str], output_path: str) -> None:
             "-preset",
             "veryfast",
             "-crf",
-            "24",
+            _EDIT_CRF,
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            _EDIT_AUDIO_BITRATE,
             "-movflags",
             "+faststart",
             output_path,
