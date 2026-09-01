@@ -28,6 +28,12 @@ from app.services import (
     voice,
 )
 from app.services import upload_post
+from app.services.clipper.models import TranscriptSegment
+from app.services.clipper.subtitle_layout import (
+    format_subtitle_segments,
+    normalize_subtitle_style,
+    write_srt,
+)
 from app.services import state as sm
 from app.utils import file_security, utils
 
@@ -686,6 +692,11 @@ def generate_final_videos(
     else:
         video_concat_mode = VideoConcatMode.random
     video_transition_mode = params.video_transition_mode
+    render_subtitle_path = _subtitle_path_for_render_style(
+        task_id,
+        subtitle_path,
+        getattr(params, "subtitle_style", "standard"),
+    )
 
     _progress = 50
     for i in range(params.video_count):
@@ -744,7 +755,7 @@ def generate_final_videos(
         bgm_mix_succeeded = video.generate_video(
             video_path=combined_video_path,
             audio_path=audio_file,
-            subtitle_path=subtitle_path,
+            subtitle_path=render_subtitle_path,
             output_file=final_video_path,
             params=params,
             bgm_file_override=bgm_file_override,
@@ -771,6 +782,49 @@ def generate_final_videos(
         combined_video_paths.append(combined_video_path)
 
     return final_video_paths, combined_video_paths, warnings
+
+
+def _subtitle_path_for_render_style(task_id: str, subtitle_path: str, subtitle_style: str) -> str:
+    if not subtitle_path or not path.isfile(subtitle_path):
+        return subtitle_path
+
+    style = normalize_subtitle_style(subtitle_style)
+    segments = _subtitle_file_to_segments(subtitle_path)
+    if not segments:
+        return subtitle_path
+
+    render_subtitle_path = path.join(utils.task_dir(task_id), f"subtitle-{style}.srt")
+    write_srt(format_subtitle_segments(segments, style), render_subtitle_path)
+    return render_subtitle_path
+
+
+def _subtitle_file_to_segments(subtitle_path: str) -> list[TranscriptSegment]:
+    segments: list[TranscriptSegment] = []
+    for _, times, text in subtitle.file_to_subtitles(subtitle_path):
+        match = re.search(
+            r"(?P<start>\d+:\d+:\d+,\d+)\s+-->\s+(?P<end>\d+:\d+:\d+,\d+)",
+            times,
+        )
+        if not match:
+            continue
+        start = _srt_timestamp_to_seconds(match.group("start"))
+        end = _srt_timestamp_to_seconds(match.group("end"))
+        clean_text = " ".join(str(text or "").split())
+        if end <= start or not clean_text:
+            continue
+        segments.append(TranscriptSegment(start=start, end=end, text=clean_text))
+    return segments
+
+
+def _srt_timestamp_to_seconds(value: str) -> float:
+    hours, minutes, rest = value.split(":")
+    seconds, milliseconds = rest.split(",")
+    return (
+        int(hours) * 3600
+        + int(minutes) * 60
+        + int(seconds)
+        + int(milliseconds) / 1000
+    )
 
 
 def _patch_cross_post_state(task_id: str, **kwargs) -> bool | None:

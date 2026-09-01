@@ -12,6 +12,7 @@ from app.services.podcast.renderer import (
     normalize_subtitle_color,
     normalize_subtitle_position,
     normalize_subtitle_size,
+    render_podcast_clip,
     reburn_podcast_subtitles,
 )
 from app.utils import utils
@@ -27,12 +28,29 @@ def edit_podcast_output(
     outputs: list[dict[str, Any]],
     trim_start: float,
     trim_end: float | None,
+    recover_before: float = 0,
+    recover_after: float = 0,
     append_output_id: str | None = None,
     append_position: str = "after",
     timeline_project: dict[str, Any] | None = None,
+    source_file: str | None = None,
+    transcript: list[TranscriptSegment] | None = None,
 ) -> dict[str, Any]:
     if timeline_project:
         return edit_podcast_timeline_output(job_id, output, outputs, timeline_project)
+
+    recover_before = max(0.0, float(recover_before or 0))
+    recover_after = max(0.0, float(recover_after or 0))
+    if recover_before > 0 or recover_after > 0:
+        return _edit_podcast_output_from_source(
+            output=output,
+            trim_start=trim_start,
+            trim_end=trim_end,
+            recover_before=recover_before,
+            recover_after=recover_after,
+            source_file=source_file,
+            transcript=transcript or [],
+        )
 
     video_path = Path(str(output.get("video_path") or "")).resolve()
     subtitle_path = Path(str(output.get("subtitle_path") or "")).resolve()
@@ -147,6 +165,107 @@ def edit_podcast_output(
             "trim_end": round(end, 2),
             "append_output_id": append_output_id or "",
             "append_position": position if append_output else "",
+        },
+    }
+
+
+def _edit_podcast_output_from_source(
+    output: dict[str, Any],
+    trim_start: float,
+    trim_end: float | None,
+    recover_before: float,
+    recover_after: float,
+    source_file: str | None,
+    transcript: list[TranscriptSegment],
+) -> dict[str, Any]:
+    if not source_file or not Path(source_file).is_file():
+        raise RuntimeError("Video original indisponivel para recuperar segundos. Gere o projeto novamente.")
+
+    candidate_start = max(0.0, float(output.get("start") or 0))
+    candidate_end = float(output.get("end") or 0)
+    if candidate_end <= candidate_start:
+        candidate_end = candidate_start + max(0.1, float(output.get("source_duration") or output.get("duration") or 0))
+    candidate_duration = max(0.1, candidate_end - candidate_start)
+    rendered_duration = max(0.1, float(output.get("duration") or candidate_duration))
+
+    start = max(0.0, min(float(trim_start or 0), max(0.0, rendered_duration - 0.1)))
+    end = max(start + 0.1, min(float(trim_end or rendered_duration), rendered_duration))
+    source_trim_start = candidate_start + (start / rendered_duration) * candidate_duration
+    source_trim_end = candidate_start + (end / rendered_duration) * candidate_duration
+
+    source_duration = _probe_duration(source_file) or 0.0
+    final_start = max(0.0, source_trim_start - recover_before)
+    final_end = source_trim_end + recover_after
+    if source_duration > 0:
+        final_end = min(final_end, source_duration)
+    if final_end - final_start < 1.0:
+        raise RuntimeError("O corte editado precisa ter pelo menos 1 segundo.")
+
+    video_path = Path(str(output.get("video_path") or "")).resolve()
+    base = video_path.with_suffix("")
+    version = f"edit-{int(time.time())}"
+    edit_base = base.parent / f"{base.name}-{version}"
+    edit_video_path = edit_base.with_suffix(".mp4")
+
+    subtitle_style = normalize_subtitle_style(str(output.get("subtitle_style") or "standard"))
+    subtitle_text_color = normalize_subtitle_color(str(output.get("subtitle_text_color") or "white"), "white")
+    subtitle_border_color = normalize_subtitle_color(str(output.get("subtitle_border_color") or "black"), "black")
+    subtitle_size = normalize_subtitle_size(str(output.get("subtitle_size") or "medium"))
+    subtitle_position = normalize_subtitle_position(str(output.get("subtitle_position") or "middle"))
+    burn_subtitles = bool(output.get("burn_subtitles", True))
+    title = str(output.get("title") or "Podcast short").strip()
+
+    render_result = render_podcast_clip(
+        source_video=source_file,
+        start=final_start,
+        end=final_end,
+        transcript=transcript,
+        output_path=str(edit_video_path),
+        title=title,
+        burn_subtitles=burn_subtitles,
+        remove_silence=True,
+        artificial_cuts=True,
+        clip_format=str(output.get("clip_format") or "auto"),
+        subtitle_style=subtitle_style,
+        subtitle_text_color=subtitle_text_color,
+        subtitle_border_color=subtitle_border_color,
+        subtitle_size=subtitle_size,
+        subtitle_position=subtitle_position,
+    )
+
+    edited_duration = render_result.get("duration") or _probe_duration(str(edit_video_path))
+    edit_subtitle_path = Path(str(render_result.get("subtitle_path") or edit_base.with_suffix(".srt")))
+    cover_title = _clean_edited_suffix(str(output.get("cover_title") or title).strip())
+    return {
+        **output,
+        "id": f"{output.get('id')}-{version}",
+        "title": f"{title} (editado)"[:90],
+        "cover_title": cover_title[:80],
+        "start": round(final_start, 3),
+        "end": round(final_end, 3),
+        "duration": edited_duration,
+        "source_duration": round(final_end - final_start, 3),
+        "removed_silence_seconds": render_result.get("removed_silence_seconds", 0),
+        "video_path": str(edit_video_path),
+        "subtitle_path": str(edit_subtitle_path),
+        "video_url": _task_url(str(edit_video_path)),
+        "subtitle_url": _task_url(str(edit_subtitle_path)),
+        "burn_subtitles": burn_subtitles,
+        "subtitle_style": subtitle_style,
+        "subtitle_text_color": subtitle_text_color,
+        "subtitle_border_color": subtitle_border_color,
+        "subtitle_size": subtitle_size,
+        "subtitle_position": subtitle_position,
+        "clip_format": render_result.get("clip_format") or output.get("clip_format") or "auto",
+        "visual_focus": render_result.get("visual_focus") or {},
+        "edited_from": output.get("id"),
+        "edited_at": int(time.time()),
+        "subtitle_edited_at": int(time.time()),
+        "edit": {
+            "trim_start": round(start, 2),
+            "trim_end": round(end, 2),
+            "recover_before": round(recover_before, 2),
+            "recover_after": round(recover_after, 2),
         },
     }
 

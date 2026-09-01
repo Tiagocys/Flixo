@@ -1,5 +1,5 @@
 import type { WorkerEnv } from "../../_lib/types";
-import { createNarrationAudio } from "../../_lib/elevenlabs";
+import { createGeminiNarrationAudio } from "../../_lib/gemini";
 import { requireCurrentUser } from "../../_lib/auth";
 
 function jsonError(message: string, status = 400) {
@@ -31,11 +31,12 @@ export async function onRequestPost({
   if (text.length > 1200) return jsonError("text is too long");
 
   try {
-    const audio = await createNarrationAudio(env, {
+    const audio = await createGeminiNarrationAudio(env, {
       text,
       userId: user.id,
       voiceProfileId:
         typeof record.voiceProfile === "string" ? record.voiceProfile : undefined,
+      persist: record.preview !== true,
     });
     return Response.json({ audio });
   } catch (error) {

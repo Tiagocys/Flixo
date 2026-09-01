@@ -107,6 +107,27 @@ def is_heavy_job(job: ClipperJob | None) -> bool:
     return job.status in ACTIVE_STATUSES or job.current_step in ACTIVE_STEPS
 
 
+def replaceable_ready_jobs(user_id: str | None, exclude_job_id: str | None = None) -> list[ClipperJob]:
+    if not user_id:
+        return []
+    with _lock:
+        _load_disk_jobs()
+        db_jobs = clipper_database.list_jobs(50, user_id=user_id)
+        for db_job in db_jobs:
+            _jobs[db_job.id] = db_job
+        jobs = list(_jobs.values())
+    ready_jobs = [
+        job
+        for job in jobs
+        if job.user_id == user_id
+        and job.id != exclude_job_id
+        and not is_heavy_job(job)
+        and job.status in {"ready", "done"}
+    ]
+    ready_jobs.sort(key=lambda job: _job_sort_time(job), reverse=True)
+    return ready_jobs
+
+
 def update_job(job_id: str, updater: Callable[[ClipperJob], None]) -> ClipperJob | None:
     with _lock:
         job = _jobs.get(job_id)
@@ -141,6 +162,41 @@ def delete_job_with_assets(job_id: str, user_id: str | None) -> str:
         logger.exception(f"failed to delete podcast job: {job.id}")
         raise JobDeleteCleanupError(job.id) from exc
     return job.id
+
+
+def prune_idle_jobs_for_user(user_id: str | None, keep_job_id: str | None = None) -> list[str]:
+    if not user_id:
+        return []
+    with _lock:
+        _load_disk_jobs()
+        db_jobs = clipper_database.list_jobs(50, user_id=user_id)
+        for db_job in db_jobs:
+            _jobs[db_job.id] = db_job
+        jobs = [job for job in _jobs.values() if job.user_id == user_id]
+
+    idle_jobs = [job for job in jobs if not is_heavy_job(job)]
+    if not idle_jobs:
+        return []
+
+    idle_jobs.sort(key=lambda job: _job_sort_time(job), reverse=True)
+    keep_ids: set[str] = set()
+    if keep_job_id:
+        keep_ids.add(keep_job_id)
+    else:
+        keep_ids.add(idle_jobs[0].id)
+
+    deleted: list[str] = []
+    for job in idle_jobs:
+        if job.id in keep_ids:
+            continue
+        try:
+            _delete_job_assets(job)
+            if not delete_job(job.id, user_id=user_id):
+                raise RuntimeError("failed to delete replaced podcast project record")
+            deleted.append(job.id)
+        except Exception:
+            logger.exception(f"failed to replace old podcast project slot: {job.id}")
+    return deleted
 
 
 def purge_expired_jobs() -> int:

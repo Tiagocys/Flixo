@@ -9,6 +9,7 @@ MEDIA_ASSETS_TABLE = "media_assets"
 MONEYPRINTER_API_URL = "https://windsor-antarctica-currencies-presenting.trycloudflare.com"
 BYTEPLUS_API_BASE = "https://ark.ap-southeast.bytepluses.com/api/v3"
 R2_PUBLIC_BASE_URL = ""
+GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
 
 [[r2_buckets]]
 binding = "VIDEO_ASSETS"

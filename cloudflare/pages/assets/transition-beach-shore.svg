@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 960" role="img" aria-label="Praia aberta com mar e céu azul">
+  <defs>
+    <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#07508e"/>
+      <stop offset=".5" stop-color="#54a9e5"/>
+      <stop offset="1" stop-color="#c8ecff"/>
+    </linearGradient>
+    <linearGradient id="sand" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#6a5543"/>
+      <stop offset=".38" stop-color="#cda96f"/>
+      <stop offset="1" stop-color="#f0d49b"/>
+    </linearGradient>
+    <filter id="soft">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+  </defs>
+  <rect width="540" height="960" fill="url(#sky)"/>
+  <g fill="#fff" opacity=".58" filter="url(#soft)">
+    <ellipse cx="78" cy="331" rx="62" ry="17"/>
+    <ellipse cx="166" cy="315" rx="45" ry="15"/>
+    <ellipse cx="306" cy="347" rx="78" ry="20"/>
+    <ellipse cx="430" cy="256" rx="54" ry="23"/>
+  </g>
+  <path d="M0 565c98 8 190 9 276 3 99-7 184-5 264 10v382H0z" fill="#317d93"/>
+  <path d="M0 588c84 12 172 14 264 6 99-8 191-4 276 12v28c-91-17-183-20-276-12-90 8-178 6-264-6z" fill="#eff9fb" opacity=".95"/>
+  <path d="M0 640c103 10 199 5 288-17 95-23 179-25 252-6v343H0z" fill="url(#sand)"/>
+  <path d="M0 752c93-22 193-24 299-6 82 14 162 13 241-3v217H0z" fill="#e9c88e" opacity=".72"/>
+  <g stroke="#5b4634" stroke-width="3" opacity=".35">
+    <path d="M-20 732c75-22 147-27 216-13"/>
+    <path d="M40 800c98-31 205-33 322-7"/>
+    <path d="M10 865c127-38 263-40 407-7"/>
+  </g>
+  <path d="M0 655c70-42 135-58 195-48-56 24-111 52-164 83z" fill="#4d3c31" opacity=".9"/>
+  <g fill="#1f2937" opacity=".75">
+    <ellipse cx="160" cy="613" rx="6" ry="9"/>
+    <ellipse cx="170" cy="616" rx="5" ry="8"/>
+    <rect x="152" y="623" width="29" height="7" rx="4"/>
+  </g>
+</svg>

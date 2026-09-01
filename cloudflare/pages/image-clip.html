@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Criar vídeo com música e fotos online | Flixo</title>
+    <meta
+      name="description"
+      content="Crie um vídeo com música e fotos: envie um áudio, adicione imagens, escolha formato e transições, e baixe o clipe em MP4."
+    />
+    <link rel="canonical" href="https://flixo-ehq.pages.dev/image-clip.html" />
+    <meta name="robots" content="index,follow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Flixo" />
+    <meta property="og:title" content="Criar vídeo com música e fotos online" />
+    <meta
+      property="og:description"
+      content="Monte um clipe em MP4 com uma música ou narração própria e várias imagens, com formato vertical, quadrado ou paisagem."
+    />
+    <meta property="og:url" content="https://flixo-ehq.pages.dev/image-clip.html" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Criar vídeo com música e fotos online" />
+    <meta
+      name="twitter:description"
+      content="Envie seu áudio, selecione fotos, escolha transições e gere um clipe em MP4."
+    />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Flixo - Criar vídeo com música e fotos",
+        "applicationCategory": "MultimediaApplication",
+        "operatingSystem": "Web",
+        "description": "Crie um vídeo com música, áudio ou narração própria e várias imagens, exportando o resultado em MP4.",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "BRL"
+        },
+        "featureList": [
+          "Criar vídeo com música e fotos",
+          "Criar clipe com áudio próprio",
+          "Montar slideshow em MP4",
+          "Escolher formato vertical, quadrado ou paisagem",
+          "Adicionar transições entre imagens"
+        ]
+      }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css?v=image-clip-replace-modal-20260830" />
+  </head>
+  <body class="clipper-lite">
+    <main class="shell clipper-shell image-clip-shell">
+      <header class="clipper-topbar">
+        <div>
+          <p>Criador de vídeo com fotos</p>
+          <h1>Crie um vídeo com música e imagens próprias.</h1>
+          <span>
+            Envie uma música, narração ou qualquer áudio, selecione suas fotos e gere um clipe em MP4.
+          </span>
+        </div>
+        <nav aria-label="Navegação">
+          <a href="/">Início</a>
+          <a href="/clipper.html">Clipper</a>
+          <a href="/youtube-download.html">Baixar YouTube</a>
+        </nav>
+      </header>
+
+      <section class="clipper-grid image-clip-grid">
+        <form id="image-clip-form" class="panel clipper-input-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Criar vídeo com áudio e fotos</h2>
+              <p>Você envia o áudio e ele define a duração final do vídeo.</p>
+            </div>
+          </div>
+          <div class="clipper-inputs">
+            <div class="field">
+              <label for="image-clip-audio">Áudio</label>
+              <input id="image-clip-audio" class="sr-only" type="file" accept="audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,audio/opus,audio/flac" />
+              <button type="button" id="image-clip-audio-picker" class="image-clip-picker-button image-clip-audio-picker-button">
+                Selecionar áudio
+              </button>
+              <div id="image-clip-audio-preview" class="image-clip-audio-preview" aria-live="polite">
+                <div class="image-clip-empty-preview">Seu áudio aparecerá aqui.</div>
+              </div>
+            </div>
+            <div class="field">
+              <label for="image-clip-images">Imagens</label>
+              <input id="image-clip-images" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" multiple />
+              <button type="button" id="image-clip-image-picker" class="image-clip-picker-button">
+                Selecionar imagens
+              </button>
+              <div class="image-clip-picker-meta">
+                <span id="image-clip-image-count">Nenhuma imagem selecionada.</span>
+                <button type="button" id="image-clip-clear-images" hidden>Limpar imagens</button>
+              </div>
+              <div id="image-clip-image-preview" class="image-clip-image-preview" aria-live="polite">
+                <div class="image-clip-empty-preview">Suas imagens aparecerão aqui.</div>
+              </div>
+            </div>
+            <div class="field">
+              <span class="candidate-render-title">Formato</span>
+              <input id="image-clip-aspect" type="hidden" value="vertical" />
+              <div class="clip-format-options image-clip-format-options" role="radiogroup" aria-label="Formato do vídeo">
+                <label class="clip-format-option">
+                  <input type="radio" name="image-clip-aspect-option" value="vertical" checked />
+                  <span class="clip-format-icon">
+                    <img src="/assets/retrato.svg" alt="" loading="lazy" />
+                  </span>
+                  <span class="clip-format-copy">
+                    <strong>9:16</strong>
+                    <small>Retrato</small>
+                    <em>Celular em pé</em>
+                  </span>
+                </label>
+                <label class="clip-format-option">
+                  <input type="radio" name="image-clip-aspect-option" value="square" />
+                  <span class="clip-format-icon">
+                    <img src="/assets/square.svg" alt="" loading="lazy" />
+                  </span>
+                  <span class="clip-format-copy">
+                    <strong>1:1</strong>
+                    <small>Quadrado</small>
+                    <em>Feed quadrado</em>
+                  </span>
+                </label>
+                <label class="clip-format-option">
+                  <input type="radio" name="image-clip-aspect-option" value="landscape" />
+                  <span class="clip-format-icon">
+                    <img src="/assets/paisagem.svg" alt="" loading="lazy" />
+                  </span>
+                  <span class="clip-format-copy">
+                    <strong>16:9</strong>
+                    <small>Paisagem</small>
+                    <em>Celular deitado</em>
+                  </span>
+                </label>
+              </div>
+            </div>
+            <div class="field">
+              <span class="candidate-render-title">Transição entre imagens</span>
+              <input id="image-clip-transition" type="hidden" value="none" />
+              <div
+                class="image-clip-transition-options"
+                data-transition-aspect="vertical"
+                role="radiogroup"
+                aria-label="Transição entre imagens"
+              >
+                <label class="image-clip-transition-option">
+                  <input type="radio" name="image-clip-transition-option" value="none" checked />
+                  <span class="image-clip-transition-demo" data-transition-preview="none">
+                    <span class="transition-scene transition-scene-a"></span>
+                    <span class="transition-scene transition-scene-b"></span>
+                  </span>
+                  <span class="image-clip-transition-copy">
+                    <strong>Sem transição</strong>
+                    <small>Corte direto</small>
+                  </span>
+                </label>
+                <label class="image-clip-transition-option">
+                  <input type="radio" name="image-clip-transition-option" value="fade" />
+                  <span class="image-clip-transition-demo" data-transition-preview="fade">
+                    <span class="transition-scene transition-scene-a"></span>
+                    <span class="transition-scene transition-scene-b"></span>
+                  </span>
+                  <span class="image-clip-transition-copy">
+                    <strong>Fade</strong>
+                    <small>Uma imagem dissolve na outra</small>
+                  </span>
+                </label>
+                <label class="image-clip-transition-option">
+                  <input type="radio" name="image-clip-transition-option" value="slideleft" />
+                  <span class="image-clip-transition-demo" data-transition-preview="slideleft">
+                    <span class="transition-scene transition-scene-a"></span>
+                    <span class="transition-scene transition-scene-b"></span>
+                  </span>
+                  <span class="image-clip-transition-copy">
+                    <strong>Deslizar esquerda</strong>
+                    <small>A próxima imagem entra da direita</small>
+                  </span>
+                </label>
+                <label class="image-clip-transition-option">
+                  <input type="radio" name="image-clip-transition-option" value="slideright" />
+                  <span class="image-clip-transition-demo" data-transition-preview="slideright">
+                    <span class="transition-scene transition-scene-a"></span>
+                    <span class="transition-scene transition-scene-b"></span>
+                  </span>
+                  <span class="image-clip-transition-copy">
+                    <strong>Deslizar direita</strong>
+                    <small>A próxima imagem entra da esquerda</small>
+                  </span>
+                </label>
+                <label class="image-clip-transition-option">
+                  <input type="radio" name="image-clip-transition-option" value="wipeleft" />
+                  <span class="image-clip-transition-demo" data-transition-preview="wipeleft">
+                    <span class="transition-scene transition-scene-a"></span>
+                    <span class="transition-scene transition-scene-b"></span>
+                  </span>
+                  <span class="image-clip-transition-copy">
+                    <strong>Cortina esquerda</strong>
+                    <small>A imagem revela da direita para esquerda</small>
+                  </span>
+                </label>
+                <label class="image-clip-transition-option">
+                  <input type="radio" name="image-clip-transition-option" value="wiperight" />
+                  <span class="image-clip-transition-demo" data-transition-preview="wiperight">
+                    <span class="transition-scene transition-scene-a"></span>
+                    <span class="transition-scene transition-scene-b"></span>
+                  </span>
+                  <span class="image-clip-transition-copy">
+                    <strong>Cortina direita</strong>
+                    <small>A imagem revela da esquerda para direita</small>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="prompt-actions">
+            <div class="helper">
+              <span class="helper-title">Vídeo de fotos</span>
+              <span>seu áudio define a duração, suas imagens viram MP4</span>
+            </div>
+            <button type="submit" id="image-clip-submit">Criar clipe</button>
+          </div>
+        </form>
+
+        <section class="panel clipper-status-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Status</h2>
+              <p id="image-clip-status-meta">Nenhum clipe iniciado.</p>
+            </div>
+            <div class="status-pill" id="image-clip-status-pill">Parado</div>
+          </div>
+          <div class="progress-track">
+            <div id="image-clip-progress-bar" class="progress-bar" style="width: 0%"></div>
+          </div>
+          <div id="image-clip-error" class="clipper-error" hidden></div>
+        </section>
+
+        <section class="panel clipper-outputs-panel" id="image-clip-output-panel" hidden>
+          <div class="panel-header">
+            <div>
+              <h2>Clipe pronto</h2>
+              <p id="image-clip-result-meta">O vídeo aparecerá aqui.</p>
+            </div>
+          </div>
+          <div id="image-clip-result" class="clipper-outputs">
+            <div class="empty-state">Nenhum clipe renderizado ainda.</div>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel image-clip-seo-panel" aria-labelledby="image-clip-seo-title">
+        <div class="panel-header">
+          <div>
+            <h2 id="image-clip-seo-title">O que você pode criar aqui?</h2>
+            <p>
+              Você transforma sua música, narração ou áudio próprio em um vídeo com fotos e imagens, pronto para baixar em MP4.
+            </p>
+          </div>
+        </div>
+        <div class="image-clip-seo-grid">
+          <article>
+            <h3>Seu clipe musical com imagens</h3>
+            <p>
+              Use suas fotos, artes ou imagens de bastidores para divulgar sua música em um clipe visual.
+            </p>
+          </article>
+          <article>
+            <h3>Sua narração com fotos</h3>
+            <p>
+              Conte histórias, apresente depoimentos, mostre portfólios ou registre eventos usando seu áudio como guia.
+            </p>
+          </article>
+          <article>
+            <h3>Seu vídeo em MP4</h3>
+            <p>
+              Você escolhe o formato vertical, quadrado ou paisagem, define a transição entre imagens e baixa o vídeo final.
+            </p>
+          </article>
+        </div>
+      </section>
+    </main>
+    <div id="image-clip-confirm-modal" class="clipper-modal image-clip-modal" hidden>
+      <div class="clipper-modal-backdrop" data-image-clip-confirm-cancel></div>
+      <section class="clipper-modal-card image-clip-modal-card" role="dialog" aria-modal="true" aria-labelledby="image-clip-confirm-title">
+        <div class="clipper-modal-body">
+          <span class="image-clip-modal-icon" aria-hidden="true">!</span>
+          <h2 id="image-clip-confirm-title">Criar novo clipe?</h2>
+          <p id="image-clip-confirm-message">
+            Você já tem um clipe existente. Se continuar, o novo clipe substituirá o anterior.
+          </p>
+        </div>
+        <div class="clipper-modal-actions">
+          <button type="button" class="secondary-button" data-image-clip-confirm-cancel>Manter clipe existente</button>
+          <button type="button" data-image-clip-confirm-accept>Criar novo clipe</button>
+        </div>
+      </section>
+    </div>
+    <script src="/auth.js" defer></script>
+    <script src="/image-clip.js?v=image-clip-replace-modal-20260830" defer></script>
+  </body>
+</html>

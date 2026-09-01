@@ -220,11 +220,9 @@ def render_job(
             logger.exception(f"failed to generate podcast covers: {job_id}")
         _raise_if_cancelled(job_id)
         outputs = [_persist_output_assets(job_id, output) for output in outputs]
-        _cleanup_source_video(job_id, job.source_file)
 
         def done(current):
             current.outputs = outputs
-            current.source_file = None
             current.status = "done"
             current.current_step = "done"
             current.progress = 100
@@ -232,6 +230,7 @@ def render_job(
             current.metadata_path = write_job_metadata(current, output_dir)
 
         registry.update_job(job_id, done)
+        registry.prune_idle_jobs_for_user(job.user_id, keep_job_id=job_id)
     except PodcastJobCancelled:
         logger.info(f"podcast render job cancelled: {job_id}")
     except Exception as error:
@@ -559,6 +558,8 @@ def edit_output(
     output_id: str,
     trim_start: float,
     trim_end: float | None,
+    recover_before: float = 0,
+    recover_after: float = 0,
     append_output_id: str | None = None,
     append_position: str = "after",
     timeline_project: dict | None = None,
@@ -573,9 +574,13 @@ def edit_output(
         outputs=[dict(item) for item in job.outputs],
         trim_start=trim_start,
         trim_end=trim_end,
+        recover_before=recover_before,
+        recover_after=recover_after,
         append_output_id=append_output_id,
         append_position=append_position,
         timeline_project=timeline_project,
+        source_file=job.source_file,
+        transcript=job.transcript,
     )
     edited_output = _persist_output_assets(job_id, edited_output)
 

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 960" role="img" aria-label="Praia com coqueiro sobre pedra">
+  <defs>
+    <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#4d83b7"/>
+      <stop offset=".58" stop-color="#83b7df"/>
+      <stop offset="1" stop-color="#d8edf7"/>
+    </linearGradient>
+    <linearGradient id="water" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#a8cbd9"/>
+      <stop offset=".5" stop-color="#f9fbf9"/>
+      <stop offset="1" stop-color="#b89777"/>
+    </linearGradient>
+    <radialGradient id="rock" cx=".48" cy=".45" r=".55">
+      <stop offset="0" stop-color="#795332"/>
+      <stop offset=".58" stop-color="#4b2f1d"/>
+      <stop offset="1" stop-color="#1f1712"/>
+    </radialGradient>
+    <filter id="soft">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+  </defs>
+  <rect width="540" height="960" fill="url(#sky)"/>
+  <g fill="#ffffff" opacity=".45" filter="url(#soft)">
+    <ellipse cx="130" cy="255" rx="86" ry="34"/>
+    <ellipse cx="186" cy="240" rx="64" ry="26"/>
+    <ellipse cx="394" cy="294" rx="96" ry="38"/>
+    <ellipse cx="466" cy="272" rx="72" ry="30"/>
+  </g>
+  <path d="M0 625c58-22 105-18 157 0 79 27 156 30 232 4 64-22 107-20 151 0v331H0z" fill="url(#water)"/>
+  <g fill="#fff" opacity=".9">
+    <path d="M5 690c55-30 110-30 169 0 56 28 114 31 179 2 69-31 126-29 181 0v44c-64-22-119-20-177 7-68 31-132 29-193-2-55-28-105-27-159 1z"/>
+    <path d="M0 785c65-22 132-20 199 8 62 26 116 26 173 0 61-28 114-29 168-4v39c-59-14-113-10-166 12-64 27-126 24-188-2-63-26-125-27-186-2z" opacity=".72"/>
+  </g>
+  <path d="M80 585c32-82 94-120 186-118 95 2 161 41 199 122 26 57 10 103-51 134-75 37-202 38-291 0-59-26-77-74-43-138z" fill="url(#rock)"/>
+  <path d="M0 662c42-34 75-36 104-6 37 39 31 82-18 129H0zM436 640c38-39 74-45 104-18v160c-70-13-107-42-112-87-2-19 1-38 8-55z" fill="#211713"/>
+  <path d="M284 472c22-96 33-168 34-218" fill="none" stroke="#7d684e" stroke-width="11" stroke-linecap="round"/>
+  <g transform="translate(321 238) rotate(-12)">
+    <path d="M0 0c-45-42-90-53-136-34 43 14 83 29 136 34z" fill="#567a2e"/>
+    <path d="M0 0c-36-25-70-27-103-6 30 4 62 9 103 6z" fill="#78943c"/>
+    <path d="M0 0c38-54 83-76 136-68-40 26-80 48-136 68z" fill="#51702c"/>
+    <path d="M0 0c47-21 89-19 127 8-39 2-78 3-127-8z" fill="#6f8a37"/>
+    <path d="M0 0c8-47 36-78 85-93-20 35-42 65-85 93z" fill="#8a9f43"/>
+  </g>
+</svg>

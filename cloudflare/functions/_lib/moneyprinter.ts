@@ -6,6 +6,7 @@ import {
 } from "./types";
 import { insertMediaAsset } from "./supabase";
 import { elevenLabsVoiceNameForProfile } from "./elevenlabs";
+import { geminiVoiceNameForProfile } from "./gemini";
 import { putR2Object } from "./r2";
 
 const DEFAULT_ELEVENLABS_VOICE = "elevenlabs:hpp4J3VqNfWAUOO0d1Us:Bella";
@@ -159,6 +160,16 @@ function subtitleStrokeColor(value: unknown): string {
   return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : "#000000";
 }
 
+function subtitleTextColor(value: unknown): string {
+  const normalized = String(value || "#FFFFFF");
+  return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized : "#FFFFFF";
+}
+
+function subtitleStyle(value: unknown): string {
+  const normalized = String(value || "standard").toLowerCase();
+  return normalized === "word" ? "word" : "standard";
+}
+
 function mediaMode(value: unknown): string {
   const normalized = String(value || "videos");
   return ["videos", "images", "mixed"].includes(normalized) ? normalized : "videos";
@@ -209,7 +220,17 @@ function aspectLabel(value: unknown): string {
   return "vertical";
 }
 
-function scriptPrompt(maxNarrationSeconds: number, aspect: unknown): string {
+function englishAspectLabel(value: unknown): string {
+  if (value === "landscape") return "horizontal";
+  if (value === "square") return "square";
+  return "vertical";
+}
+
+function scriptPrompt(maxNarrationSeconds: number, aspect: unknown, language: unknown): string {
+  const locale = String(language || "").toLowerCase();
+  if (locale.startsWith("en")) {
+    return `Create an English script for a short ${englishAspectLabel(aspect)} video, with at most ${maxNarrationSeconds} seconds of narration. Use short, direct sentences that are easy to caption. Do not include titles, scene markers, emojis, or technical instructions.`;
+  }
   return `Crie um roteiro em português do Brasil para um vídeo ${aspectLabel(aspect)} curto, com no máximo ${maxNarrationSeconds} segundos de narração. Use frases curtas, diretas e fáceis de legendar. Não inclua títulos, marcações de cena, emojis ou instruções técnicas.`;
 }
 
@@ -217,6 +238,8 @@ function composeTaskPayload(prompt: string, settings: JobSettings = {}) {
   const voiceName =
     settings.tts === "elevenlabs"
       ? settings.voice || elevenLabsVoiceNameForProfile(settings.voiceProfile)
+      : settings.tts === "gemini"
+        ? settings.voice || geminiVoiceNameForProfile(settings.voiceProfile)
       : settings.voice || "pt-BR-FranciscaNeural-Female";
   const maxNarrationSeconds = clampNumber(settings.maxNarrationSeconds, 30, 10, 60);
   const clipDuration = clampNumber(settings.videoClipDuration, 5, 2, 8);
@@ -255,10 +278,11 @@ function composeTaskPayload(prompt: string, settings: JobSettings = {}) {
     video_music_prompt: "",
     sonilo_bgm_prompt: "",
     subtitle_enabled: settings.subtitleEnabled !== false,
+    subtitle_style: subtitleStyle(settings.subtitleStyle),
     subtitle_position: subtitlePosition(settings.subtitlePosition),
     custom_position: 70,
     font_name: "STHeitiMedium.ttc",
-    text_fore_color: "#FFFFFF",
+    text_fore_color: subtitleTextColor(settings.subtitleTextColor),
     text_background_color: false,
     rounded_subtitle_background: false,
     font_size: fontSize,
@@ -266,7 +290,7 @@ function composeTaskPayload(prompt: string, settings: JobSettings = {}) {
     stroke_width: strokeWidth,
     n_threads: 2,
     paragraph_number: 1,
-    video_script_prompt: scriptPrompt(maxNarrationSeconds, settings.aspect),
+    video_script_prompt: scriptPrompt(maxNarrationSeconds, settings.aspect, settings.language),
     custom_system_prompt: "",
   };
 }
@@ -370,6 +394,8 @@ export async function syncFromBackend(
       video_script?: string;
       script?: string;
       videos?: string[];
+      combined_videos?: string[];
+      materials?: string[];
       subtitles?: string[];
       audio?: string;
       audio_file?: string;
@@ -406,6 +432,16 @@ export async function syncFromBackend(
   const nextNarrationKey = data.audio || data.audio_file || job.narration_key;
   const nextScript = data.video_script || data.script || job.script;
   const nextError = nextStatus === "done" ? null : data.error || job.error;
+  const nextAssetManifest = {
+    ...(job.asset_manifest || {}),
+    ...(Array.isArray(data.materials) ? { materials: data.materials } : {}),
+    ...(Array.isArray(data.combined_videos)
+      ? { combined_videos: data.combined_videos }
+      : {}),
+    ...(nextVideoKey ? { final_video: nextVideoKey } : {}),
+  };
+  const assetManifestChanged =
+    JSON.stringify(nextAssetManifest) !== JSON.stringify(job.asset_manifest || {});
 
   const unchanged =
     nextStatus === job.status &&
@@ -415,7 +451,8 @@ export async function syncFromBackend(
     nextSubtitlesKey === job.subtitles_key &&
     nextNarrationKey === job.narration_key &&
     nextScript === job.script &&
-    nextError === job.error;
+    nextError === job.error &&
+    !assetManifestChanged;
 
   if (unchanged) {
     return job;
@@ -452,6 +489,7 @@ export async function syncFromBackend(
     video_key: nextVideoKey,
     subtitles_key: nextSubtitlesKey,
     narration_key: nextNarrationKey,
+    asset_manifest: nextAssetManifest,
     error: nextError,
     timeline:
       nextStatus === "done" && job.status !== "done"

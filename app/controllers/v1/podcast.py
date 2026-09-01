@@ -34,6 +34,7 @@ router = new_router()
 
 class PodcastRenderRequest(BaseModel):
     selected_ids: list[str] = Field(default_factory=list)
+    replace_existing_ready: bool = False
     burn_subtitles: bool = True
     remove_silence: bool = True
     artificial_cuts: bool = True
@@ -75,6 +76,8 @@ class PodcastOutputMetadataRequest(BaseModel):
 class PodcastOutputEditRequest(BaseModel):
     trim_start: float = Field(default=0, ge=0)
     trim_end: float | None = Field(default=None, gt=0)
+    recover_before: float = Field(default=0, ge=0)
+    recover_after: float = Field(default=0, ge=0)
     append_output_id: str | None = None
     append_position: str = Field(default="after", pattern="^(before|after)$")
     timeline_project: dict | None = None
@@ -120,6 +123,23 @@ def _ensure_no_heavy_job(user_id: str | None, task_id: str, exclude_job_id: str 
             message="Você já tem um projeto em processamento. Aguarde terminar ou interrompa o processo atual.",
             data={"active_job_id": active_job.id, "active_step": active_job.current_step, "active_status": active_job.status},
         )
+
+
+def _ensure_replace_ready_confirmed(user_id: str | None, task_id: str, confirmed: bool):
+    ready_jobs = registry.replaceable_ready_jobs(user_id, exclude_job_id=task_id)
+    if not ready_jobs or confirmed:
+        return
+    previous = ready_jobs[0]
+    raise HttpException(
+        task_id=task_id,
+        status_code=409,
+        message="Este projeto substituirá o projeto pronto anterior. Deseja continuar?",
+        data={
+            "requires_ready_replacement_confirmation": True,
+            "previous_job_id": previous.id,
+            "previous_title": _job_title(previous),
+        },
+    )
 
 
 def _job_title(job) -> str:
@@ -264,6 +284,7 @@ def render_podcast_job(
     if not body.selected_ids:
         raise HttpException(task_id=job_id, status_code=400, message="Selecione pelo menos um corte.")
     _ensure_no_heavy_job(x_flixo_user_id, job_id, exclude_job_id=job_id)
+    _ensure_replace_ready_confirmed(x_flixo_user_id, job_id, body.replace_existing_ready)
 
     background_tasks.add_task(
         render_job,
@@ -603,6 +624,8 @@ def edit_podcast_output_endpoint(
             output_id=output_id,
             trim_start=body.trim_start,
             trim_end=body.trim_end,
+            recover_before=body.recover_before,
+            recover_after=body.recover_after,
             append_output_id=body.append_output_id,
             append_position=body.append_position,
             timeline_project=body.timeline_project,

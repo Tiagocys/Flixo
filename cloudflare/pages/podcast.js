@@ -307,6 +307,8 @@ async function readJson(response) {
   if (!response.ok) {
     const error = new Error(payload?.message || payload?.error || response.statusText);
     error.status = response.status;
+    error.data = payload?.data || null;
+    error.payload = payload;
     throw error;
   }
   return payload;
@@ -513,6 +515,7 @@ function setActionLocked(locked) {
   }
   if (!locked) {
     syncYoutubeActionState();
+    updateVisibleEditSaveStates();
   }
 }
 
@@ -1348,7 +1351,7 @@ function renderOutputsNow(job) {
                     <strong data-preview-end="${escapeHtml(output.id)}">${escapeHtml(formatSeconds(output.duration || 0))}</strong>
                   </div>
                   <div>
-                    <span>Selecionado</span>
+                    <span>Tempo total do corte</span>
                     <strong data-preview-selected="${escapeHtml(output.id)}">${escapeHtml(formatSeconds(output.duration || 0))}</strong>
                   </div>
                 </div>
@@ -1420,7 +1423,7 @@ function renderOutputsNow(job) {
                 </div>
                 <div class="clip-range-readout">
                   <span data-range-start-label="${escapeHtml(output.id)}">Início: 0 ms</span>
-                  <span data-range-duration-label="${escapeHtml(output.id)}">Selecionado: ${escapeHtml(formatMilliseconds(output.duration || 0))}</span>
+                  <span data-range-duration-label="${escapeHtml(output.id)}">Tempo total do corte: ${escapeHtml(formatMilliseconds(output.duration || 0))}</span>
                   <span data-range-end-label="${escapeHtml(output.id)}">Fim: ${escapeHtml(formatMilliseconds(output.duration || 0))}</span>
                 </div>
               </div>
@@ -1465,8 +1468,8 @@ function renderOutputsNow(job) {
                 ${burnSubtitles ? "Salvar clipe sem legenda" : "Salvar clipe com legenda"}
               </button>
               <button type="button" class="secondary-button" data-edit-toggle="${escapeHtml(output.id)}">Editar corte</button>
-              <button type="button" class="secondary-button" data-edit-save="${escapeHtml(output.id)}" hidden>
-                Salvar como novo clipe
+              <button type="button" class="secondary-button" data-edit-save="${escapeHtml(output.id)}" hidden disabled>
+                Recortar e salvar
               </button>
               ${
                 canDeleteOutput
@@ -1484,7 +1487,8 @@ function renderOutputsNow(job) {
   for (const output of outputs) {
     const outputId = String(output?.id || "");
     if (outputId && state.outputTabs.get(outputId) === "edit") {
-      syncTimelinePreview(outputId);
+      loadEditPreviewVideo(outputId);
+      syncClipRangeTimeline(outputId);
     }
   }
   syncActionLockControls();
@@ -1521,8 +1525,8 @@ function selectOutputTab(outputId, tabName) {
     panel.hidden = !selected;
   }
   if (tabName === "edit") {
-    setActiveTimelineOutput(outputId);
-    syncTimelinePreview(outputId);
+    loadEditPreviewVideo(outputId);
+    syncClipRangeTimeline(outputId);
   }
 }
 
@@ -1662,6 +1666,11 @@ function subtitleTabHtml({ output, previewFrameUrl, burnSubtitles, activeTab }) 
   const outputId = String(output?.id || "");
   return `
     <section ${outputTabPanelAttrs(outputId, "subtitle", activeTab)}>
+      <div class="output-tab-actions subtitle-primary-actions">
+        <button type="button" class="secondary-button subtitle-edit-button" data-subtitle-toggle="${escapeHtml(outputId)}">
+          Editar legenda
+        </button>
+      </div>
       <div class="subtitle-editor" data-subtitle-panel="${escapeHtml(outputId)}" hidden>
         <label for="podcast-subtitle-${escapeHtml(outputId)}">Editar legenda</label>
         <div
@@ -1672,9 +1681,6 @@ function subtitleTabHtml({ output, previewFrameUrl, burnSubtitles, activeTab }) 
       </div>
       ${subtitleColorPreviewHtml(output, previewFrameUrl)}
       <div class="output-tab-actions">
-        <button type="button" class="secondary-button" data-subtitle-toggle="${escapeHtml(outputId)}">
-          Editar legenda
-        </button>
         <button type="button" class="secondary-button" data-subtitle-save="${escapeHtml(outputId)}">
           Salvar alterações
         </button>
@@ -1704,77 +1710,254 @@ function editTabHtml({ output, outputs, canDeleteOutput, activeTab }) {
 
 function clipEditorInnerHtml(output, outputs, canDeleteOutput = false) {
   const outputId = String(output?.id || "");
-  const project = timelineProjectForOutput(output, outputs);
-  const selected = selectedTimelineClip(outputId, project);
-  const selectedAsset = selected ? timelineAssetById(project, selected.assetId) : null;
-  const previewAsset = timelineAssetById(project, timelineClipAt(project, project.playhead)?.assetId || selected?.assetId);
+  const duration = Math.max(0.001, Number(output?.duration || 0));
+  const sourceStart = Math.max(0, Number(output?.start || 0));
+  const sourceEnd = Math.max(sourceStart, Number(output?.end || sourceStart));
+  const sourceDuration = Number(state.job?.source_metadata?.duration || 0);
+  const canRecover = Boolean(state.job?.source_file && sourceEnd > sourceStart);
+  const recoverBeforeMax = Math.max(0, sourceStart);
+  const recoverAfterMax = sourceDuration > sourceEnd ? Math.max(0, sourceDuration - sourceEnd) : null;
+  const recoverDisabled = canRecover ? "" : "disabled";
+  const recoverAfterMaxAttr = recoverAfterMax == null ? "" : `max="${escapeHtml(recoverAfterMax.toFixed(3))}"`;
   return `
     <div class="clip-editor-preview">
-      <video
-        controls
-        playsinline
-        preload="none"
-        poster="${escapeHtml(previewAsset?.posterUrl || outputCoverUrl(output))}"
-        data-src="${escapeHtml(previewAsset?.videoUrl || output.video_url || "")}"
-        data-edit-preview="${escapeHtml(outputId)}"
-      ></video>
+      <div class="clip-editor-video-frame">
+        <video
+          controls
+          playsinline
+          preload="metadata"
+          poster="${escapeHtml(outputCoverUrl(output))}"
+          data-src="${escapeHtml(output.video_url || "")}"
+          data-edit-preview="${escapeHtml(outputId)}"
+        ></video>
+        <div class="clip-editor-loader" data-edit-loader="${escapeHtml(outputId)}" hidden>
+          <span>Preparando vídeo...</span>
+        </div>
+      </div>
       <div class="clip-editor-time-panel">
         <div>
-          <span>Cursor</span>
-          <strong data-nle-playhead-label="${escapeHtml(outputId)}">${escapeHtml(formatSeconds(project.playhead || 0))}</strong>
+          <span>Tempo atual</span>
+          <strong data-preview-current="${escapeHtml(outputId)}">0.000s</strong>
         </div>
         <div>
-          <span>Duração</span>
-          <strong data-nle-duration-label="${escapeHtml(outputId)}">${escapeHtml(formatSeconds(timelineProjectDuration(project)))}</strong>
+          <span>Início</span>
+          <strong data-preview-start="${escapeHtml(outputId)}">0.000s</strong>
         </div>
         <div>
-          <span>Clipe</span>
-          <strong data-nle-selected-label="${escapeHtml(outputId)}">${escapeHtml(selectedAsset?.name || "Nenhum")}</strong>
+          <span>Fim</span>
+          <strong data-preview-end="${escapeHtml(outputId)}">${escapeHtml(formatSeconds(duration))}</strong>
         </div>
         <div>
-          <span>Origem</span>
-          <strong data-nle-source-label="${escapeHtml(outputId)}">${escapeHtml(selected ? `${formatSeconds(selected.sourceIn)} - ${formatSeconds(selected.sourceOut)}` : "0.000s")}</strong>
+          <span>Tempo total do corte</span>
+          <strong data-preview-selected="${escapeHtml(outputId)}">${escapeHtml(formatSeconds(duration))}</strong>
         </div>
       </div>
     </div>
-    <div class="nle-editor-shell" data-nle-editor="${escapeHtml(outputId)}">
-      <section class="nle-timeline-panel">
-        <div class="nle-toolbar">
-          <button type="button" class="secondary-button" data-nle-undo="${escapeHtml(outputId)}" title="Desfazer última ação da timeline (Ctrl+Z)">Desfazer</button>
-          <button
-            type="button"
-            class="secondary-button"
-            data-nle-split="${escapeHtml(outputId)}"
-            title="Cortar no cursor"
-            onclick="event.preventDefault(); event.stopPropagation(); window.flixoTimelineSplit?.(this.dataset.nleSplit); return false;"
-          >
-            Tesoura
-          </button>
-          <button type="button" class="secondary-button" data-edit-save="${escapeHtml(outputId)}">
-            Aplicar
-          </button>
-        </div>
-        ${timelineTrackHtml(outputId, project)}
-        ${selected ? timelineClipInspectorHtml(outputId, selected, selectedAsset) : ""}
-        <div class="output-tab-actions">
-          ${
-            canDeleteOutput
-              ? `<button type="button" class="secondary-button danger-button output-delete-button" data-output-delete="${escapeHtml(outputId)}">Excluir clipe</button>`
-              : ""
-          }
-        </div>
-      </section>
-      <section class="nle-assets-panel">
-        <div class="cover-options-head">
-          <strong>Mídias do projeto</strong>
-          <span>Use o mesmo asset quantas vezes quiser.</span>
-        </div>
-        <div class="nle-asset-list">
-          ${timelineAssetsHtml(outputId, project)}
-        </div>
-      </section>
+    <div class="clip-editor-grid">
+      <div class="field">
+        <label for="podcast-edit-start-${escapeHtml(outputId)}">Início do corte</label>
+        <input
+          id="podcast-edit-start-${escapeHtml(outputId)}"
+          class="output-edit-input"
+          data-edit-start="${escapeHtml(outputId)}"
+          type="number"
+          min="0"
+          max="${escapeHtml(duration.toFixed(3))}"
+          step="0.001"
+          value="0.000"
+        />
+      </div>
+      <div class="field">
+        <label for="podcast-edit-end-${escapeHtml(outputId)}">Fim do corte</label>
+        <input
+          id="podcast-edit-end-${escapeHtml(outputId)}"
+          class="output-edit-input"
+          data-edit-end="${escapeHtml(outputId)}"
+          type="number"
+          min="0.1"
+          max="${escapeHtml(duration.toFixed(3))}"
+          step="0.001"
+          value="${escapeHtml(duration.toFixed(3))}"
+        />
+      </div>
+      <div class="field">
+        <label for="podcast-recover-before-${escapeHtml(outputId)}">Recuperar antes (s)</label>
+        <input
+          id="podcast-recover-before-${escapeHtml(outputId)}"
+          class="output-edit-input"
+          data-recover-before="${escapeHtml(outputId)}"
+          type="number"
+          min="0"
+          max="${escapeHtml(recoverBeforeMax.toFixed(3))}"
+          step="0.001"
+          value="0.000"
+          ${recoverDisabled}
+        />
+      </div>
+      <div class="field">
+        <label for="podcast-recover-after-${escapeHtml(outputId)}">Recuperar depois (s)</label>
+        <input
+          id="podcast-recover-after-${escapeHtml(outputId)}"
+          class="output-edit-input"
+          data-recover-after="${escapeHtml(outputId)}"
+          type="number"
+          min="0"
+          ${recoverAfterMaxAttr}
+          step="0.001"
+          value="0.000"
+          ${recoverDisabled}
+        />
+      </div>
+    </div>
+    <div class="clip-range-timeline" data-range-timeline="${escapeHtml(outputId)}" data-duration="${escapeHtml(duration)}">
+      ${clipRangeRulerHtml(outputId, duration)}
+      <div class="clip-range-track" data-range-track="${escapeHtml(outputId)}">
+        <div class="clip-range-selection" data-range-selection="${escapeHtml(outputId)}" style="left: 0%; right: 0%"></div>
+        <div class="clip-range-playhead" data-range-playhead="${escapeHtml(outputId)}" style="left: 0%"></div>
+        <button
+          type="button"
+          class="clip-range-handle clip-range-handle-start"
+          data-range-handle="${escapeHtml(outputId)}"
+          data-handle-kind="start"
+          style="left: 0%"
+          aria-label="Arrastar início do corte"
+        ></button>
+        <button
+          type="button"
+          class="clip-range-handle clip-range-handle-end"
+          data-range-handle="${escapeHtml(outputId)}"
+          data-handle-kind="end"
+          style="left: 100%"
+          aria-label="Arrastar fim do corte"
+        ></button>
+      </div>
+      <div class="clip-range-readout">
+        <span data-range-start-label="${escapeHtml(outputId)}">Início: 0 ms</span>
+        <span data-range-duration-label="${escapeHtml(outputId)}">Tempo total do corte: ${escapeHtml(formatMilliseconds(duration))}</span>
+        <span data-range-end-label="${escapeHtml(outputId)}">Fim: ${escapeHtml(formatMilliseconds(duration))}</span>
+      </div>
+    </div>
+    ${editMediaSelectorHtml(output, outputs)}
+    <div class="helper">
+      ${
+        canRecover
+          ? "Arraste as extremidades para cortar. Use recuperação para puxar segundos do vídeo original antes ou depois do clipe."
+          : "Arraste as extremidades para cortar. Recuperar segundos exige o vídeo original do projeto."
+      }
+    </div>
+    <div class="output-tab-actions">
+      <button type="button" class="secondary-button" data-edit-save="${escapeHtml(outputId)}" disabled>
+        Recortar e salvar
+      </button>
+      ${
+        canDeleteOutput
+          ? `<button type="button" class="secondary-button danger-button output-delete-button" data-output-delete="${escapeHtml(outputId)}">Excluir clipe</button>`
+          : ""
+      }
     </div>
   `;
+}
+
+function editMediaSelectorHtml(output, outputs = []) {
+  const outputId = String(output?.id || "");
+  const availableOutputs = (outputs || []).filter(
+    (item) => item?.id && item?.video_url && String(item.id) !== outputId,
+  );
+  if (!availableOutputs.length) {
+    return `
+      <section class="clip-editor-media-picker">
+        <div class="clip-editor-media-header">
+          <strong>Mídias do projeto</strong>
+          <span>Renderize mais cortes para complementar este vídeo.</span>
+        </div>
+      </section>
+    `;
+  }
+  return `
+    <section class="clip-editor-media-picker" data-edit-media-picker="${escapeHtml(outputId)}">
+      <div class="clip-editor-media-header">
+        <strong>Mídias do projeto</strong>
+        <span>Escolha um corte para adicionar antes ou depois deste vídeo.</span>
+      </div>
+      <input type="hidden" data-edit-append="${escapeHtml(outputId)}" value="" />
+      <input type="hidden" data-edit-position="${escapeHtml(outputId)}" value="after" />
+      <div class="clip-editor-media-position" data-edit-media-position-group="${escapeHtml(outputId)}">
+        <button type="button" data-edit-media-position="${escapeHtml(outputId)}" data-position="before" disabled>
+          Antes
+        </button>
+        <button type="button" data-edit-media-position="${escapeHtml(outputId)}" data-position="after" data-selected="true" disabled>
+          Depois
+        </button>
+        <button type="button" data-edit-media-clear="${escapeHtml(outputId)}" disabled>
+          Não complementar
+        </button>
+      </div>
+      <div class="clip-editor-media-list">
+        ${availableOutputs.map((item, index) => {
+          const title = item.title || `Corte ${index + 1}`;
+          const posterUrl = outputPreviewFrameUrl(item);
+          return `
+            <button
+              type="button"
+              class="clip-editor-media-card"
+              data-edit-media-option="${escapeHtml(outputId)}"
+              data-edit-media-id="${escapeHtml(item.id)}"
+              data-selected="false"
+            >
+              ${
+                posterUrl
+                  ? `<img src="${escapeHtml(posterUrl)}" alt="" loading="lazy" />`
+                  : `<span class="clip-editor-media-placeholder"></span>`
+              }
+              <span>
+                <strong>${escapeHtml(title)}</strong>
+                <small>${escapeHtml(formatSeconds(item.duration || 0))}</small>
+              </span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function clipRangeRulerHtml(outputId, duration) {
+  const total = Math.max(0.001, Number(duration || 0));
+  const interval = timelineRulerInterval(total);
+  const ticks = [];
+  for (let time = 0; time <= total + 0.001; time += interval) {
+    ticks.push(Math.min(time, total));
+  }
+  if (!ticks.length || ticks[ticks.length - 1] < total - 0.001) ticks.push(total);
+  return `
+    <div
+      class="clip-range-ruler"
+      data-range-ruler="${escapeHtml(outputId)}"
+      role="slider"
+      tabindex="0"
+      aria-label="Navegar pelo vídeo"
+      aria-valuemin="0"
+      aria-valuemax="${escapeHtml(total.toFixed(3))}"
+      aria-valuenow="0"
+    >
+      <div class="clip-range-ruler-line"></div>
+      <div class="clip-range-ruler-playhead" data-range-ruler-playhead="${escapeHtml(outputId)}" style="left: 0%"></div>
+      ${ticks.map((time) => {
+        const left = Math.max(0, Math.min(100, (time / total) * 100));
+        return `
+          <span class="clip-range-tick" style="left: ${left}%">
+            <strong>${escapeHtml(formatRangeRulerLabel(time))}</strong>
+          </span>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function formatRangeRulerLabel(value) {
+  const seconds = Math.max(0, Number(value || 0));
+  if (seconds >= 60) return formatTime(seconds);
+  return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
 }
 
 function timelineAssetsHtml(outputId, project) {
@@ -4133,6 +4316,23 @@ async function latestActivePodcastJobId() {
   );
 }
 
+async function requestRenderSelectedCandidates(selectedIds, replaceExistingReady = false) {
+  const subtitleAppearance = selectedSubtitleAppearance(GLOBAL_SUBTITLE_PREVIEW_ID);
+  return fetch(`/api/podcast/jobs/${encodeURIComponent(state.jobId)}/render`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      selected_ids: selectedIds,
+      replace_existing_ready: replaceExistingReady,
+      burn_subtitles: els.burnSubtitles?.checked ?? true,
+      remove_silence: els.removeSilence?.checked ?? true,
+      artificial_cuts: els.artificialCuts?.checked ?? true,
+      clip_format: selectedClipFormat(),
+      ...subtitleAppearance,
+    }),
+  }).then(readJson);
+}
+
 function scheduleRefresh(job = state.job) {
   clearTimeout(state.timer);
   state.timer = setTimeout(() => {
@@ -4160,12 +4360,88 @@ function removeOutput(outputId) {
 
 function ensureVideoSource(video) {
   if (!video) return null;
+  attachEditPreviewVideoListeners(video);
   const source = video.dataset.src || video.dataset.videoUrl || "";
   if (source && video.getAttribute("src") !== source) {
+    setEditPreviewLoading(video, true);
     video.src = source;
     video.load();
+  } else {
+    updateEditPreviewLoading(video);
   }
   return video;
+}
+
+function attachEditPreviewVideoListeners(video) {
+  if (!video?.dataset?.editPreview || video.dataset.editPreviewListeners === "true") return;
+  video.dataset.editPreviewListeners = "true";
+  const settle = () => {
+    settleEditPreviewLoading(video);
+  };
+  video.addEventListener("loadstart", () => setEditPreviewLoading(video, true));
+  video.addEventListener("loadedmetadata", () => {
+    applyPendingEditSeek(video);
+    if (!hasPendingEditSeek(video)) settle();
+  });
+  video.addEventListener("loadeddata", settle);
+  video.addEventListener("canplay", settle);
+  video.addEventListener("canplaythrough", settle);
+  video.addEventListener("seeked", () => settleEditPreviewLoading(video, { force: true }));
+  video.addEventListener("timeupdate", settle);
+  video.addEventListener("waiting", () => setEditPreviewLoading(video, true));
+  video.addEventListener("stalled", () => setEditPreviewLoading(video, true));
+}
+
+function hasPendingEditSeek(video) {
+  return Number.isFinite(Number(video?.dataset?.pendingSeek || ""));
+}
+
+function isEditPreviewReady(video) {
+  return (
+    Boolean(video?.currentSrc || video?.getAttribute?.("src")) &&
+    !video.seeking &&
+    video.readyState >= 2 &&
+    !hasPendingEditSeek(video)
+  );
+}
+
+function setEditPreviewLoading(video, loading) {
+  const outputId = String(video?.dataset?.editPreview || "");
+  const preview = video?.closest?.(".clip-editor-preview");
+  const loader = outputId
+    ? els.outputs.querySelector(`[data-edit-loader="${CSS.escape(outputId)}"]`)
+    : preview?.querySelector?.("[data-edit-loader]");
+  if (video?.dataset?.editPreviewLoadingTimer) {
+    window.clearTimeout(Number(video.dataset.editPreviewLoadingTimer));
+    delete video.dataset.editPreviewLoadingTimer;
+  }
+  if (preview) preview.classList.toggle("is-loading", Boolean(loading));
+  if (loader) loader.hidden = !loading;
+  if (video) {
+    video.controls = !loading;
+    if (loading) {
+      video.dataset.editPreviewLoadingTimer = String(window.setTimeout(() => {
+        if (!video.seeking && video.readyState >= 1) {
+          delete video.dataset.pendingSeek;
+          syncPreviewPlayhead(String(video.dataset.editPreview || ""));
+          setEditPreviewLoading(video, false);
+        }
+      }, 2500));
+    }
+  }
+}
+
+function updateEditPreviewLoading(video) {
+  setEditPreviewLoading(video, !isEditPreviewReady(video));
+}
+
+function settleEditPreviewLoading(video, options = {}) {
+  if (!video) return false;
+  if (!options.force && (video.seeking || video.readyState < 2)) return false;
+  delete video.dataset.pendingSeek;
+  syncPreviewPlayhead(String(video.dataset.editPreview || ""));
+  setEditPreviewLoading(video, false);
+  return true;
 }
 
 function playOutputVideo(outputId) {
@@ -4405,6 +4681,59 @@ function canonicalSubtitle(subtitle) {
   return subtitleFromBlocks(blocks);
 }
 
+function subtitleTemplateRowHtml(outputId, block, index, blocks) {
+  const previousEndMs = index > 0 ? blocks[index - 1].endMs : 0;
+  const nextStartMs = blocks[index + 1]?.startMs;
+  const canInsertAfter = Number.isFinite(nextStartMs) && nextStartMs > block.endMs + 1;
+  return `
+    <article
+      class="subtitle-template-row"
+      data-subtitle-block="${escapeHtml(outputId)}"
+      data-subtitle-index="${escapeHtml(block.index || index + 1)}"
+      data-subtitle-original-time="${escapeHtml(block.time || subtitleTimeTextFromBlock(block))}"
+      data-subtitle-start-ms="${escapeHtml(block.startMs)}"
+      data-subtitle-end-ms="${escapeHtml(block.endMs)}"
+      data-subtitle-min-start-ms="${escapeHtml(previousEndMs)}"
+      data-subtitle-max-end-ms="${Number.isFinite(nextStartMs) ? escapeHtml(nextStartMs) : ""}"
+    >
+      <div class="subtitle-template-meta">
+        <span data-subtitle-row-number>${escapeHtml(block.index || index + 1)}</span>
+        <button
+          type="button"
+          class="subtitle-template-time"
+          data-subtitle-time-toggle="${escapeHtml(outputId)}"
+        >
+          ${escapeHtml(block.time || subtitleTimeTextFromBlock(block))}
+        </button>
+        <button
+          type="button"
+          class="subtitle-insert-button"
+          data-subtitle-insert-after="${escapeHtml(outputId)}"
+          ${canInsertAfter ? "" : "disabled"}
+          aria-label="Inserir legenda neste intervalo"
+          title="${canInsertAfter ? "Inserir legenda entre este tempo e o próximo" : "Não há intervalo livre até a próxima legenda"}"
+        >
+          +
+        </button>
+        <div class="subtitle-template-time-editor" data-subtitle-time-editor="${escapeHtml(outputId)}" hidden></div>
+      </div>
+      <textarea
+        class="output-edit-textarea subtitle-template-text"
+        data-subtitle-text="${escapeHtml(outputId)}"
+        rows="2"
+        spellcheck="true"
+      >${escapeHtml(block.text)}</textarea>
+    </article>
+  `;
+}
+
+function subtitleTimeTextFromBlock(block) {
+  const startMs = Math.round(Number(block?.startMs));
+  const endMs = Math.round(Number(block?.endMs));
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return "";
+  return `${formatSrtTimestamp(startMs)} --> ${formatSrtTimestamp(endMs)}`;
+}
+
 function renderSubtitleTemplate(outputId, subtitle) {
   const editor = els.outputs.querySelector(`[data-subtitle-editor="${CSS.escape(outputId)}"]`);
   if (!editor) return;
@@ -4414,44 +4743,7 @@ function renderSubtitleTemplate(outputId, subtitle) {
     editor.dataset.loaded = "false";
     return;
   }
-  editor.innerHTML = blocks
-    .map(
-      (block, index) => {
-        const previousEndMs = index > 0 ? blocks[index - 1].endMs : 0;
-        const nextStartMs = blocks[index + 1]?.startMs;
-        return `
-        <article
-          class="subtitle-template-row"
-          data-subtitle-block="${escapeHtml(outputId)}"
-          data-subtitle-index="${escapeHtml(block.index)}"
-          data-subtitle-original-time="${escapeHtml(block.time)}"
-          data-subtitle-start-ms="${escapeHtml(block.startMs)}"
-          data-subtitle-end-ms="${escapeHtml(block.endMs)}"
-          data-subtitle-min-start-ms="${escapeHtml(previousEndMs)}"
-          data-subtitle-max-end-ms="${Number.isFinite(nextStartMs) ? escapeHtml(nextStartMs) : ""}"
-        >
-          <div class="subtitle-template-meta">
-            <span>${escapeHtml(block.index || index + 1)}</span>
-            <button
-              type="button"
-              class="subtitle-template-time"
-              data-subtitle-time-toggle="${escapeHtml(outputId)}"
-            >
-              ${escapeHtml(block.time)}
-            </button>
-            <div class="subtitle-template-time-editor" data-subtitle-time-editor="${escapeHtml(outputId)}" hidden></div>
-          </div>
-          <textarea
-            class="output-edit-textarea subtitle-template-text"
-            data-subtitle-text="${escapeHtml(outputId)}"
-            rows="2"
-            spellcheck="true"
-          >${escapeHtml(block.text)}</textarea>
-        </article>
-      `;
-      },
-    )
-    .join("");
+  editor.innerHTML = blocks.map((block, index) => subtitleTemplateRowHtml(outputId, block, index, blocks)).join("");
   editor.dataset.loaded = "true";
   editor.dataset.savedSubtitle = canonicalSubtitle(subtitle);
 }
@@ -4491,6 +4783,87 @@ function subtitleTimeTextFromRow(row) {
   const endMs = Math.round(Number(row?.dataset.subtitleEndMs));
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return "";
   return `${formatSrtTimestamp(startMs)} --> ${formatSrtTimestamp(endMs)}`;
+}
+
+function subtitleBlockFromRow(row, fallbackIndex = 1) {
+  const startMs = Math.round(Number(row?.dataset.subtitleStartMs));
+  const endMs = Math.round(Number(row?.dataset.subtitleEndMs));
+  return {
+    index: String(row?.dataset.subtitleIndex || fallbackIndex),
+    time: subtitleTimeTextFromRow(row),
+    startMs: Number.isFinite(startMs) ? startMs : 0,
+    endMs: Number.isFinite(endMs) ? endMs : 0,
+    text: row?.querySelector("[data-subtitle-text]")?.value || "",
+  };
+}
+
+function refreshSubtitleTemplateRows(outputId) {
+  const rows = [...els.outputs.querySelectorAll(`[data-subtitle-block="${CSS.escape(outputId)}"]`)];
+  rows.forEach((row, index) => {
+    const previous = rows[index - 1];
+    const next = rows[index + 1];
+    const previousEndMs = previous ? Math.round(Number(previous.dataset.subtitleEndMs || 0)) : 0;
+    const nextStartMs = next ? Math.round(Number(next.dataset.subtitleStartMs || 0)) : Infinity;
+    const startMs = Math.round(Number(row.dataset.subtitleStartMs || 0));
+    const endMs = Math.round(Number(row.dataset.subtitleEndMs || 0));
+    const number = String(index + 1);
+    row.dataset.subtitleIndex = number;
+    row.dataset.subtitleMinStartMs = String(Math.max(0, previousEndMs));
+    row.dataset.subtitleMaxEndMs = Number.isFinite(nextStartMs) ? String(nextStartMs) : "";
+    const label = row.querySelector("[data-subtitle-row-number]");
+    if (label) label.textContent = number;
+    const timeToggle = row.querySelector("[data-subtitle-time-toggle]");
+    if (timeToggle) timeToggle.textContent = subtitleTimeTextFromRow(row);
+    const insertButton = row.querySelector("[data-subtitle-insert-after]");
+    if (insertButton) {
+      const canInsertAfter = Number.isFinite(nextStartMs) && nextStartMs > endMs + 1;
+      insertButton.disabled = !canInsertAfter;
+      insertButton.title = canInsertAfter
+        ? "Inserir legenda entre este tempo e o próximo"
+        : "Não há intervalo livre até a próxima legenda";
+    }
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      row.dataset.subtitleStartMs = "0";
+      row.dataset.subtitleEndMs = "1";
+    }
+  });
+}
+
+function insertSubtitleRowAfter(outputId, row) {
+  if (!row) return;
+  closeSubtitleTimeEditors(outputId);
+  const rows = [...els.outputs.querySelectorAll(`[data-subtitle-block="${CSS.escape(outputId)}"]`)];
+  const rowIndex = rows.indexOf(row);
+  const nextRow = rows[rowIndex + 1];
+  if (!nextRow) {
+    throw new Error("Só é possível inserir uma legenda entre dois tempos existentes.");
+  }
+  const currentEndMs = Math.round(Number(row.dataset.subtitleEndMs || 0));
+  const nextStartMs = Math.round(Number(nextRow.dataset.subtitleStartMs || 0));
+  if (!Number.isFinite(currentEndMs) || !Number.isFinite(nextStartMs) || nextStartMs <= currentEndMs + 1) {
+    throw new Error("Não há intervalo livre suficiente para inserir uma legenda aqui.");
+  }
+
+  const currentBlocks = rows.map((item, index) => subtitleBlockFromRow(item, index + 1));
+  const newBlock = {
+    index: String(rowIndex + 2),
+    time: `${formatSrtTimestamp(currentEndMs)} --> ${formatSrtTimestamp(nextStartMs)}`,
+    startMs: currentEndMs,
+    endMs: nextStartMs,
+    text: "",
+  };
+  const blocksWithInsert = [
+    ...currentBlocks.slice(0, rowIndex + 1),
+    newBlock,
+    ...currentBlocks.slice(rowIndex + 1),
+  ];
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = subtitleTemplateRowHtml(outputId, newBlock, rowIndex + 1, blocksWithInsert).trim();
+  const insertedRow = wrapper.firstElementChild;
+  if (!insertedRow) return;
+  row.insertAdjacentElement("afterend", insertedRow);
+  refreshSubtitleTemplateRows(outputId);
+  insertedRow.querySelector("[data-subtitle-text]")?.focus();
 }
 
 function closeSubtitleTimeEditors(outputId, exceptRow = null) {
@@ -4604,12 +4977,6 @@ function commitOpenSubtitleTimeEdit(outputId) {
   }
   row.dataset.subtitleStartMs = String(startMs);
   row.dataset.subtitleEndMs = String(endMs);
-  const rows = [...els.outputs.querySelectorAll(`[data-subtitle-block="${CSS.escape(outputId)}"]`)];
-  const rowIndex = rows.indexOf(row);
-  const previousRow = rows[rowIndex - 1];
-  const nextRow = rows[rowIndex + 1];
-  if (previousRow) previousRow.dataset.subtitleMaxEndMs = String(startMs);
-  if (nextRow) nextRow.dataset.subtitleMinStartMs = String(endMs);
   const toggle = row.querySelector("[data-subtitle-time-toggle]");
   if (toggle) {
     toggle.textContent = subtitleTimeTextFromRow(row);
@@ -4617,6 +4984,7 @@ function commitOpenSubtitleTimeEdit(outputId) {
   }
   editor.hidden = true;
   editor.innerHTML = "";
+  refreshSubtitleTemplateRows(outputId);
   return true;
 }
 
@@ -4675,9 +5043,13 @@ async function saveOutputTimeline(outputId) {
 }
 
 async function exportEditedOutput(outputId) {
-  const timelineProject = timelineProjectPayload(outputId);
-  if (!timelineProject || timelineProjectDuration(timelineProject) < 1) {
-    throw new Error("A timeline precisa ter pelo menos 1 segundo.");
+  const { start, end } = trimValues(outputId);
+  const recoverBefore = Number(els.outputs.querySelector(`[data-recover-before="${CSS.escape(outputId)}"]`)?.value || 0);
+  const recoverAfter = Number(els.outputs.querySelector(`[data-recover-after="${CSS.escape(outputId)}"]`)?.value || 0);
+  const appendOutputId = String(els.outputs.querySelector(`[data-edit-append="${CSS.escape(outputId)}"]`)?.value || "");
+  const appendPosition = String(els.outputs.querySelector(`[data-edit-position="${CSS.escape(outputId)}"]`)?.value || "after");
+  if (end - start < 1) {
+    throw new Error("O corte editado precisa ter pelo menos 1 segundo.");
   }
   const payload = await fetch(
     `/api/podcast/jobs/${encodeURIComponent(state.jobId)}/outputs/${encodeURIComponent(outputId)}/edit`,
@@ -4685,7 +5057,12 @@ async function exportEditedOutput(outputId) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        timeline_project: timelineProject,
+        trim_start: start,
+        trim_end: end,
+        recover_before: Number.isFinite(recoverBefore) ? Math.max(0, recoverBefore) : 0,
+        recover_after: Number.isFinite(recoverAfter) ? Math.max(0, recoverAfter) : 0,
+        append_output_id: appendOutputId,
+        append_position: appendPosition === "before" ? "before" : "after",
       }),
     },
   ).then(readJson);
@@ -4740,6 +5117,75 @@ function trimValues(outputId) {
   return { start, end, duration };
 }
 
+function recoveryValues(outputId) {
+  const beforeInput = els.outputs.querySelector(`[data-recover-before="${CSS.escape(outputId)}"]`);
+  const afterInput = els.outputs.querySelector(`[data-recover-after="${CSS.escape(outputId)}"]`);
+  const recoverBefore = Math.max(0, Number(beforeInput?.value || 0));
+  const recoverAfter = Math.max(0, Number(afterInput?.value || 0));
+  return {
+    recoverBefore: Number.isFinite(recoverBefore) ? recoverBefore : 0,
+    recoverAfter: Number.isFinite(recoverAfter) ? recoverAfter : 0,
+  };
+}
+
+function hasClipEditChanges(outputId) {
+  const epsilon = 0.0005;
+  const { start, end, duration } = trimValues(outputId);
+  const { recoverBefore, recoverAfter } = recoveryValues(outputId);
+  const appendOutputId = String(els.outputs.querySelector(`[data-edit-append="${CSS.escape(outputId)}"]`)?.value || "");
+  return (
+    start > epsilon ||
+    Math.abs(end - duration) > epsilon ||
+    recoverBefore > epsilon ||
+    recoverAfter > epsilon ||
+    Boolean(appendOutputId)
+  );
+}
+
+function updateEditSaveState(outputId) {
+  if (!outputId) return;
+  const enabled = hasClipEditChanges(outputId) && !state.actionLocked;
+  els.outputs.querySelectorAll(`[data-edit-save="${CSS.escape(outputId)}"]`).forEach((button) => {
+    button.disabled = !enabled;
+    button.setAttribute("aria-disabled", enabled ? "false" : "true");
+  });
+}
+
+function updateVisibleEditSaveStates() {
+  els.outputs.querySelectorAll("[data-edit-save]").forEach((button) => {
+    updateEditSaveState(button.dataset.editSave || "");
+  });
+}
+
+function setEditMediaSelection(outputId, mediaId) {
+  const id = String(outputId || "");
+  const selectedMediaId = String(mediaId || "");
+  const picker = els.outputs.querySelector(`[data-edit-media-picker="${CSS.escape(id)}"]`);
+  if (!picker) return;
+  const appendInput = picker.querySelector(`[data-edit-append="${CSS.escape(id)}"]`);
+  if (appendInput) appendInput.value = selectedMediaId;
+  picker.querySelectorAll("[data-edit-media-option]").forEach((card) => {
+    card.dataset.selected = card.dataset.editMediaId === selectedMediaId ? "true" : "false";
+  });
+  picker.querySelectorAll("[data-edit-media-position], [data-edit-media-clear]").forEach((button) => {
+    button.disabled = !selectedMediaId;
+  });
+  updateEditSaveState(id);
+}
+
+function setEditMediaPosition(outputId, position) {
+  const id = String(outputId || "");
+  const nextPosition = position === "before" ? "before" : "after";
+  const picker = els.outputs.querySelector(`[data-edit-media-picker="${CSS.escape(id)}"]`);
+  if (!picker) return;
+  const positionInput = picker.querySelector(`[data-edit-position="${CSS.escape(id)}"]`);
+  if (positionInput) positionInput.value = nextPosition;
+  picker.querySelectorAll("[data-edit-media-position]").forEach((button) => {
+    button.dataset.selected = button.dataset.position === nextPosition ? "true" : "false";
+  });
+  updateEditSaveState(id);
+}
+
 function setTrimValues(outputId, start, end) {
   const duration = clipDuration(outputId);
   const { startInput, endInput } = trimInputs(outputId);
@@ -4750,11 +5196,12 @@ function setTrimValues(outputId, start, end) {
   syncClipRangeTimeline(outputId);
 }
 
-function syncClipRangeTimeline(outputId) {
+function syncClipRangeTimeline(outputId, options = {}) {
   const { start, end, duration } = trimValues(outputId);
   const { startInput, endInput } = trimInputs(outputId);
-  if (startInput && startInput.value !== start.toFixed(3)) startInput.value = start.toFixed(3);
-  if (endInput && endInput.value !== end.toFixed(3)) endInput.value = end.toFixed(3);
+  const normalizeInputs = options.normalizeInputs !== false;
+  if (normalizeInputs && startInput && startInput.value !== start.toFixed(3)) startInput.value = start.toFixed(3);
+  if (normalizeInputs && endInput && endInput.value !== end.toFixed(3)) endInput.value = end.toFixed(3);
 
   const startPercent = (start / duration) * 100;
   const endPercent = (end / duration) * 100;
@@ -4777,31 +5224,87 @@ function syncClipRangeTimeline(outputId) {
   if (startHandle) startHandle.style.left = `${startPercent}%`;
   if (endHandle) endHandle.style.left = `${endPercent}%`;
   if (startLabel) startLabel.textContent = `Início: ${formatMilliseconds(start)}`;
-  if (durationLabel) durationLabel.textContent = `Selecionado: ${formatMilliseconds(end - start)}`;
+  if (durationLabel) durationLabel.textContent = `Tempo total do corte: ${formatMilliseconds(end - start)}`;
   if (endLabel) endLabel.textContent = `Fim: ${formatMilliseconds(end)}`;
   if (previewStart) previewStart.textContent = formatSeconds(start);
   if (previewEnd) previewEnd.textContent = formatSeconds(end);
   if (previewSelected) previewSelected.textContent = formatSeconds(end - start);
   if (previewCurrent && preview) previewCurrent.textContent = formatSeconds(preview.currentTime || 0);
   syncPreviewPlayhead(outputId);
+  updateEditSaveState(outputId);
 }
 
 function syncPreviewPlayhead(outputId) {
   const preview = els.outputs.querySelector(`[data-edit-preview="${CSS.escape(outputId)}"]`);
-  const playhead = els.outputs.querySelector(`[data-range-playhead="${CSS.escape(outputId)}"]`);
-  const previewCurrent = els.outputs.querySelector(`[data-preview-current="${CSS.escape(outputId)}"]`);
   const duration = clipDuration(outputId);
   if (!preview) return;
   const current = Math.max(0, Math.min(Number(preview.currentTime || 0), duration));
-  if (playhead) playhead.style.left = `${(current / duration) * 100}%`;
+  setRangePlayheadPosition(outputId, current);
+}
+
+function setRangePlayheadPosition(outputId, time) {
+  const playhead = els.outputs.querySelector(`[data-range-playhead="${CSS.escape(outputId)}"]`);
+  const rulerPlayhead = els.outputs.querySelector(`[data-range-ruler-playhead="${CSS.escape(outputId)}"]`);
+  const ruler = els.outputs.querySelector(`[data-range-ruler="${CSS.escape(outputId)}"]`);
+  const previewCurrent = els.outputs.querySelector(`[data-preview-current="${CSS.escape(outputId)}"]`);
+  const duration = clipDuration(outputId);
+  const current = Math.max(0, Math.min(Number(time || 0), duration));
+  const left = `${(current / duration) * 100}%`;
+  if (playhead) playhead.style.left = left;
+  if (rulerPlayhead) rulerPlayhead.style.left = left;
+  if (ruler) ruler.setAttribute("aria-valuenow", current.toFixed(3));
   if (previewCurrent) previewCurrent.textContent = formatSeconds(current);
+  return current;
+}
+
+function finishPendingEditSeek(video) {
+  const outputId = String(video?.dataset?.editPreview || "");
+  const pending = Number(video?.dataset?.pendingSeek || "");
+  if (!outputId || !Number.isFinite(pending) || video.seeking) return false;
+  const target = Math.max(0, Math.min(pending, clipDuration(outputId)));
+  const current = Math.max(0, Math.min(Number(video.currentTime || 0), clipDuration(outputId)));
+  if (Math.abs(current - target) > 0.5 && video.readyState < 2) return false;
+  delete video.dataset.pendingSeek;
+  setRangePlayheadPosition(outputId, current);
+  return true;
+}
+
+function applyPendingEditSeek(video) {
+  const outputId = String(video?.dataset?.editPreview || "");
+  const pending = Number(video?.dataset?.pendingSeek || "");
+  if (!outputId || !Number.isFinite(pending) || video.readyState < 1) return false;
+  const target = Math.max(0, Math.min(pending, clipDuration(outputId)));
+  try {
+    video.currentTime = target;
+    setRangePlayheadPosition(outputId, target);
+    window.setTimeout(() => {
+      finishPendingEditSeek(video);
+      settleEditPreviewLoading(video);
+    }, 180);
+    return true;
+  } catch (_error) {
+    video.dataset.pendingSeek = String(target);
+    return false;
+  }
 }
 
 function seekPreview(outputId, time) {
   const preview = loadEditPreviewVideo(outputId);
   if (!preview) return;
-  preview.currentTime = Math.max(0, Math.min(Number(time || 0), clipDuration(outputId)));
-  syncPreviewPlayhead(outputId);
+  const target = Math.max(0, Math.min(Number(time || 0), clipDuration(outputId)));
+  preview.dataset.pendingSeek = String(target);
+  setRangePlayheadPosition(outputId, target);
+  setEditPreviewLoading(preview, true);
+  if (!applyPendingEditSeek(preview)) {
+    preview.addEventListener("loadedmetadata", () => applyPendingEditSeek(preview), { once: true });
+  }
+}
+
+function seekPreviewFromRangeElement(outputId, element, clientX) {
+  if (!outputId || !element) return;
+  const rect = element.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+  seekPreview(outputId, ratio * clipDuration(outputId));
 }
 
 els.outputs.addEventListener("click", async (event) => {
@@ -4852,6 +5355,33 @@ els.outputs.addEventListener("click", async (event) => {
 
   if (state.actionLocked && event.target.closest("button, a.secondary-button")) {
     event.preventDefault();
+    return;
+  }
+
+  const editMediaOption = event.target.closest("[data-edit-media-option]");
+  if (editMediaOption) {
+    event.preventDefault();
+    setEditMediaSelection(
+      editMediaOption.dataset.editMediaOption || "",
+      editMediaOption.dataset.editMediaId || "",
+    );
+    return;
+  }
+
+  const editMediaPosition = event.target.closest("[data-edit-media-position]");
+  if (editMediaPosition) {
+    event.preventDefault();
+    setEditMediaPosition(
+      editMediaPosition.dataset.editMediaPosition || "",
+      editMediaPosition.dataset.position || "after",
+    );
+    return;
+  }
+
+  const editMediaClear = event.target.closest("[data-edit-media-clear]");
+  if (editMediaClear) {
+    event.preventDefault();
+    setEditMediaSelection(editMediaClear.dataset.editMediaClear || "", "");
     return;
   }
 
@@ -5127,8 +5657,10 @@ els.outputs.addEventListener("click", async (event) => {
       els.error.textContent = error instanceof Error ? error.message : String(error);
     } finally {
       setActionLocked(false);
-      editSave.disabled = false;
-      editSave.textContent = originalText;
+      if (document.contains(editSave)) {
+        editSave.textContent = originalText;
+        updateEditSaveState(outputId);
+      }
     }
     return;
   }
@@ -5136,19 +5668,23 @@ els.outputs.addEventListener("click", async (event) => {
   const timeToggle = event.target.closest("[data-subtitle-time-toggle]");
   const timeApply = event.target.closest("[data-subtitle-time-apply]");
   const timeCancel = event.target.closest("[data-subtitle-time-cancel]");
-  if (timeToggle || timeApply || timeCancel) {
+  const timeInsert = event.target.closest("[data-subtitle-insert-after]");
+  if (timeToggle || timeApply || timeCancel || timeInsert) {
     const outputId = String(
       timeToggle?.dataset.subtitleTimeToggle ||
         timeApply?.dataset.subtitleTimeApply ||
         timeCancel?.dataset.subtitleTimeCancel ||
+        timeInsert?.dataset.subtitleInsertAfter ||
         "",
     );
-    const row = (timeToggle || timeApply || timeCancel).closest("[data-subtitle-block]");
+    const row = (timeToggle || timeApply || timeCancel || timeInsert).closest("[data-subtitle-block]");
     try {
       if (timeToggle) {
         openSubtitleTimeEditor(outputId, row);
       } else if (timeApply) {
         commitOpenSubtitleTimeEdit(outputId);
+      } else if (timeInsert) {
+        insertSubtitleRowAfter(outputId, row);
       } else {
         closeSubtitleTimeEditors(outputId);
       }
@@ -5279,12 +5815,30 @@ els.outputs.addEventListener("input", (event) => {
 
   const startInput = event.target.closest("[data-edit-start]");
   const endInput = event.target.closest("[data-edit-end]");
-  const outputId = startInput?.dataset.editStart || endInput?.dataset.editEnd || "";
+  const recoverBeforeInput = event.target.closest("[data-recover-before]");
+  const recoverAfterInput = event.target.closest("[data-recover-after]");
+  const outputId =
+    startInput?.dataset.editStart ||
+    endInput?.dataset.editEnd ||
+    recoverBeforeInput?.dataset.recoverBefore ||
+    recoverAfterInput?.dataset.recoverAfter ||
+    "";
   if (!outputId) return;
-  syncClipRangeTimeline(outputId);
+  if (startInput || endInput) {
+    syncClipRangeTimeline(outputId, { normalizeInputs: false });
+  } else {
+    updateEditSaveState(outputId);
+  }
 });
 
 els.outputs.addEventListener("focusout", (event) => {
+  const trimInput = event.target.closest("[data-edit-start], [data-edit-end]");
+  if (trimInput) {
+    const outputId = trimInput.dataset.editStart || trimInput.dataset.editEnd || "";
+    if (outputId) syncClipRangeTimeline(outputId);
+    return;
+  }
+
   const subtitleTimeInput = event.target.closest("[data-subtitle-start-input], [data-subtitle-end-input]");
   if (!subtitleTimeInput) return;
   const row = subtitleTimeInput.closest("[data-subtitle-block]");
@@ -5292,6 +5846,13 @@ els.outputs.addEventListener("focusout", (event) => {
 });
 
 els.outputs.addEventListener("change", (event) => {
+  const trimInput = event.target.closest("[data-edit-start], [data-edit-end]");
+  if (trimInput) {
+    const outputId = trimInput.dataset.editStart || trimInput.dataset.editEnd || "";
+    if (outputId) syncClipRangeTimeline(outputId);
+    return;
+  }
+
   const nleSourceIn = event.target.closest("[data-nle-source-in]");
   const nleSourceOut = event.target.closest("[data-nle-source-out]");
   if (nleSourceIn || nleSourceOut) {
@@ -5755,6 +6316,29 @@ els.outputs.addEventListener("pointerdown", (event) => {
     return;
   }
 
+  const rangeRuler = target.closest("[data-range-ruler]");
+  if (rangeRuler) {
+    const outputId = String(rangeRuler.dataset.rangeRuler || "");
+    if (!outputId) return;
+    event.preventDefault();
+
+    const updateFromPointer = (pointerEvent) => {
+      seekPreviewFromRangeElement(outputId, rangeRuler, pointerEvent.clientX);
+    };
+
+    const stopDragging = () => {
+      window.removeEventListener("pointermove", updateFromPointer);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+
+    updateFromPointer(event);
+    window.addEventListener("pointermove", updateFromPointer);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    return;
+  }
+
   const handle = target.closest("[data-range-handle]");
   if (!handle) return;
   const outputId = String(handle.dataset.rangeHandle || "");
@@ -5770,12 +6354,20 @@ els.outputs.addEventListener("pointerdown", (event) => {
     const ratio = Math.max(0, Math.min(1, (pointerEvent.clientX - rect.left) / Math.max(1, rect.width)));
     const nextTime = ratio * clipDuration(outputId);
     const { start, end } = trimValues(outputId);
+    const preview = els.outputs.querySelector(`[data-edit-preview="${CSS.escape(outputId)}"]`);
+    const currentTime = Math.max(0, Number(preview?.currentTime || 0));
     if (kind === "start") {
-      setTrimValues(outputId, Math.min(nextTime, end - 0.001), end);
-      seekPreview(outputId, Math.min(nextTime, end - 0.001));
+      const nextStart = Math.min(nextTime, end - 0.001);
+      setTrimValues(outputId, nextStart, end);
+      if (currentTime < nextStart) {
+        seekPreview(outputId, nextStart);
+      }
     } else {
-      setTrimValues(outputId, start, Math.max(nextTime, start + 0.001));
-      seekPreview(outputId, Math.max(nextTime, start + 0.001));
+      const nextEnd = Math.max(nextTime, start + 0.001);
+      setTrimValues(outputId, start, nextEnd);
+      if (currentTime > nextEnd) {
+        seekPreview(outputId, nextEnd);
+      }
     }
   };
 
@@ -5792,13 +6384,11 @@ els.outputs.addEventListener("pointerdown", (event) => {
 });
 
 els.outputs.addEventListener("click", (event) => {
-  const track = event.target.closest("[data-range-track]");
-  if (!track || event.target.closest("[data-range-handle]")) return;
-  const outputId = String(track.dataset.rangeTrack || "");
+  const target = event.target.closest("[data-range-track], [data-range-ruler]");
+  if (!target || event.target.closest("[data-range-handle]")) return;
+  const outputId = String(target.dataset.rangeTrack || target.dataset.rangeRuler || "");
   if (!outputId) return;
-  const rect = track.getBoundingClientRect();
-  const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
-  seekPreview(outputId, ratio * clipDuration(outputId));
+  seekPreviewFromRangeElement(outputId, target, event.clientX);
 });
 
 els.outputs.addEventListener("timeupdate", (event) => {
@@ -5888,19 +6478,29 @@ els.renderButton.addEventListener("click", async () => {
   hideCandidateSubtitleSettings();
   setProgress(state.job);
   try {
-    const subtitleAppearance = selectedSubtitleAppearance(GLOBAL_SUBTITLE_PREVIEW_ID);
-    const payload = await fetch(`/api/podcast/jobs/${encodeURIComponent(state.jobId)}/render`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        selected_ids: selectedIds,
-        burn_subtitles: els.burnSubtitles?.checked ?? true,
-        remove_silence: els.removeSilence?.checked ?? true,
-        artificial_cuts: els.artificialCuts?.checked ?? true,
-        clip_format: selectedClipFormat(),
-        ...subtitleAppearance,
-      }),
-    }).then(readJson);
+    let payload;
+    try {
+      payload = await requestRenderSelectedCandidates(selectedIds);
+    } catch (error) {
+      if (error?.status !== 409 || !error?.data?.requires_ready_replacement_confirmation) {
+        throw error;
+      }
+      const previousTitle = error.data.previous_title || "projeto anterior";
+      const confirmed = await confirmAction({
+        title: "Substituir projeto pronto?",
+        message: `Ao avançar, este projeto substituirá "${previousTitle}". Os clipes, legendas e capas do projeto anterior serão removidos. Deseja continuar?`,
+        confirmLabel: "Continuar e substituir",
+        cancelLabel: "Cancelar",
+      });
+      if (!confirmed) {
+        state.renderSelectionLocked = false;
+        setCandidateSelectionDisabled(false);
+        renderCandidates(state.job);
+        syncCandidateSelectionState(state.job);
+        return;
+      }
+      payload = await requestRenderSelectedCandidates(selectedIds, true);
+    }
     state.job = normalizeJob(payload);
     updateRenderSelectionLock(state.job);
     setProgress(state.job);

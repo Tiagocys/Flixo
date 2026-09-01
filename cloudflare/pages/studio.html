@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Flixo</title>
+    <title>Estúdio de criação | Flixo</title>
     <meta
       name="description"
-      content="Transforme vídeos longos e links do YouTube em cortes editáveis com legendas, capas, histórico e upload para YouTube."
+      content="Crie vídeos por prompt, monte vídeos com bancos de mídia e gere narrações com Gemini TTS para usar na timeline."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -17,12 +17,20 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
+    <main class="shell studio-page-shell">
+      <nav class="page-topbar" aria-label="Navegação principal" hidden aria-hidden="true">
+        <a href="/" class="brand-link">Flixo</a>
+        <div>
+          <a class="secondary-link" href="/clipper.html">Clipper</a>
+          <a class="secondary-link" href="/image-clip.html">Áudio + imagens</a>
+        </div>
+      </nav>
+
       <section class="studio" id="studio-workspace">
         <div class="studio-heading">
           <div>
             <div class="eyebrow" data-workspace-eyebrow>Criação com IA</div>
-            <h2 data-workspace-title>Crie clipes de 4 segundos a partir de um prompt.</h2>
+            <h1 data-workspace-title>Crie clipes de 4 segundos a partir de um prompt.</h1>
           </div>
           <p data-workspace-description>
             Digite uma cena, opcionalmente envie uma imagem de referência e gere um clipe curto.
@@ -52,8 +60,6 @@
           >
             <span data-i18n="tabTts">Criar narração</span>
           </button>
-          <a class="workspace-tab" href="/clipper.html" data-i18n="tabClipper">Clipper</a>
-          <a class="workspace-tab" href="/image-clip.html" data-i18n="tabImageClip">Áudio + imagens</a>
           <a class="workspace-tab" href="/youtube-download.html" data-i18n="tabYoutubeDownload">Baixar YouTube</a>
         </div>
 
@@ -159,9 +165,9 @@
                 <div class="field">
                   <label for="full-video-aspect">Formato</label>
                   <select id="full-video-aspect" name="fullVideoAspect">
-                    <option value="portrait">Vertical 9:16</option>
+                    <option value="portrait">Retrato 9:16</option>
                     <option value="square">Quadrado 1:1</option>
-                    <option value="landscape">Horizontal 16:9</option>
+                    <option value="landscape">Paisagem 16:9</option>
                   </select>
                 </div>
                 <input id="full-subtitle-text-color" name="fullSubtitleTextColor" type="hidden" value="#ffffff" />
@@ -248,7 +254,7 @@
             <div class="prompt-actions">
               <div class="helper">
                 <span class="helper-title">Fluxo completo</span>
-                <span>tema → sugestão de mídia → seleção → narração/legenda → vídeo</span>
+                <span>tema -> sugestão de mídia -> seleção -> narração/legenda -> vídeo</span>
               </div>
               <button type="submit" id="full-video-button" hidden>Gerar com selecionados</button>
             </div>
@@ -295,7 +301,7 @@
             <div class="prompt-actions">
               <div class="helper">
                 <span class="helper-title">Narração</span>
-                <span>Texto → narração → timeline</span>
+                <span>Texto -> narração -> timeline</span>
               </div>
               <button type="submit" id="tts-button">Gerar áudio</button>
             </div>
@@ -335,7 +341,7 @@
             <div class="prompt-actions">
               <div class="helper">
                 <span class="helper-title">Biblioteca Pexels</span>
-                <span>Busca clipes verticais para montar seu vídeo.</span>
+                <span>Busca clipes para montar seu vídeo.</span>
               </div>
               <button type="submit" id="media-search-button" data-i18n="searchVideos">Buscar vídeos</button>
             </div>

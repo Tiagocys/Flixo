@@ -87,9 +87,12 @@ export async function onRequestGet({
     Math.max(1, Number(url.searchParams.get("limit") || "8"))
   );
   const jobs = await listJobs(env, limit, user.id);
+  const visibleJobs = jobs.filter(
+    (job) => job.backend_provider === "byteplus" || job.settings?.provider === "byteplus"
+  );
   return Response.json({
-    jobs: jobs.map((job) => toJobResponse(job, env).job),
-    total: jobs.length,
+    jobs: visibleJobs.map((job) => toJobResponse(job, env).job),
+    total: visibleJobs.length,
   });
 }
 
@@ -125,6 +128,12 @@ export async function onRequestPost({
   );
   const storedSettings = sanitizeSettings(settings);
   const provider = settings.provider === "byteplus" ? "byteplus" : "moneyprinterturbo";
+  if (provider !== "byteplus") {
+    return jsonError(
+      "Este fluxo foi desativado temporariamente porque depende de bancos externos de mídia.",
+      410
+    );
+  }
   const now = new Date().toISOString();
   const jobId = createJobId();
   const initialJob = await insertJob(env, {

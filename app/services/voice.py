@@ -1092,7 +1092,9 @@ def gemini_tts(
     try:
         api_key = config.app.get("gemini_api_key", "")
         if not api_key:
-            logger.error("Gemini API key is not set")
+            message = "Gemini API key is not set"
+            _set_last_tts_error(message)
+            logger.error(message)
             return None
 
         logger.info(f"start, voice name: {voice_name}, try: 1")
@@ -1110,16 +1112,34 @@ def gemini_tts(
 
         # google-genai 使用统一 Client 调用文本和 TTS 模型。上下文管理器确保
         # 请求结束后释放 HTTP 连接，同时保留原有 PCM 转码和字幕时间轴逻辑。
-        with genai.Client(api_key=api_key) as client:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash-preview-tts",
-                contents=text,
-                config=generation_config,
-            )
+        response = None
+        last_error = ""
+        for attempt in range(1, 4):
+            try:
+                if attempt > 1:
+                    logger.info(f"retry Gemini TTS, voice name: {voice_name}, try: {attempt}")
+                with genai.Client(api_key=api_key) as client:
+                    response = client.models.generate_content(
+                        model="gemini-2.5-flash-preview-tts",
+                        contents=text,
+                        config=generation_config,
+                    )
+                last_error = ""
+                break
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"Gemini TTS attempt {attempt} failed, error: {last_error}")
+                if attempt < 3 and ("503" in last_error or "UNAVAILABLE" in last_error):
+                    time.sleep(attempt * 2)
+                    continue
+                _set_last_tts_error(f"Gemini TTS failed: {last_error}")
+                return None
 
         # 检查响应
-        if not response.candidates or not response.candidates[0].content:
-            logger.error("No audio content received from Gemini TTS")
+        if not response or not response.candidates or not response.candidates[0].content:
+            message = "No audio content received from Gemini TTS"
+            _set_last_tts_error(message)
+            logger.error(message)
             return None
             
         # 获取音频数据
@@ -1130,7 +1150,9 @@ def gemini_tts(
                 break
                 
         if not audio_data:
-            logger.error("No audio data found in response")
+            message = "No audio data found in response"
+            _set_last_tts_error(message)
+            logger.error(message)
             return None
             
         # 音频数据已经是原始字节，不需要base64解码
@@ -1154,7 +1176,9 @@ def gemini_tts(
                 sample_width=2     # 16-bit
             )
         except Exception as e:
-            logger.error(f"Failed to load PCM audio: {e}")
+            message = f"Failed to load PCM audio: {e}"
+            _set_last_tts_error(message)
+            logger.error(message)
             return None
         
         # API、CLI 或测试可以直接把尚不存在的嵌套目录作为输出位置。这里在
@@ -1181,10 +1205,14 @@ def gemini_tts(
         )
         
     except ImportError as e:
-        logger.error(f"Missing required package for Gemini TTS: {str(e)}. Please install: pip install pydub")
+        message = f"Missing required package for Gemini TTS: {str(e)}. Please install: pip install pydub"
+        _set_last_tts_error(message)
+        logger.error(message)
         return None
     except Exception as e:
-        logger.error(f"Gemini TTS failed, error: {str(e)}")
+        message = f"Gemini TTS failed: {str(e)}"
+        _set_last_tts_error(message)
+        logger.error(message)
         return None
 
 

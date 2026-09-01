@@ -62,6 +62,11 @@ export interface WorkerEnv {
   PEXELS_API_KEY?: string;
   PIXABAY_APIKEY?: string;
   PIXABAY_API_KEY?: string;
+  GEMINI_APIKEY?: string;
+  GEMINI_API_KEY?: string;
+  GOOGLE_APIKEY?: string;
+  GOOGLE_API_KEY?: string;
+  GEMINI_TTS_MODEL?: string;
   ELEVENLABS_APIKEY?: string;
   ELEVENLABS_API_KEY?: string;
   MEDIA_ASSETS_TABLE?: string;
