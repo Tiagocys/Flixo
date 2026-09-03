@@ -45,6 +45,7 @@ const state = {
   fullVideoSelectedIds: new Set(),
   timelineAssets: [],
   audioResults: [],
+  imageResults: [],
   timelineAudioAssets: [],
   activeJobId: null,
   activeTab: "ai",
@@ -59,11 +60,86 @@ const state = {
 const DEFAULT_CLIP_SETTINGS = {
   provider: "byteplus",
   model: "seedance-1-5-pro-251215",
+  qualityPreset: "balanced",
   duration: 4,
   resolution: "480p",
   ratio: "9:16",
   cameraFixed: false,
 };
+
+const AI_VIDEO_QUALITY_PRESETS = [
+  {
+    id: "balanced",
+    labelKey: "aiQualityBalancedTitle",
+    descriptionKey: "aiQualityBalancedDescription",
+    model: "seedance-1-5-pro-251215",
+    resolution: "480p",
+  },
+  {
+    id: "fast",
+    labelKey: "aiQualityFastTitle",
+    descriptionKey: "aiQualityFastDescription",
+    model: "dreamina-seedance-2-0-fast-260128",
+    resolution: "480p",
+  },
+  {
+    id: "economy",
+    labelKey: "aiQualityEconomyTitle",
+    descriptionKey: "aiQualityEconomyDescription",
+    model: "dreamina-seedance-2-0-mini-260615",
+    resolution: "480p",
+  },
+  {
+    id: "quality",
+    labelKey: "aiQualityQualityTitle",
+    descriptionKey: "aiQualityQualityDescription",
+    model: "dreamina-seedance-2-0-260128",
+    resolution: "720p",
+  },
+];
+
+const AI_VIDEO_DURATION_OPTIONS = [
+  { value: 4, labelKey: "aiDurationShortTitle", descriptionKey: "aiDurationShortDescription" },
+  { value: 8, labelKey: "aiDurationMediumTitle", descriptionKey: "aiDurationMediumDescription" },
+  { value: 12, labelKey: "aiDurationLongTitle", descriptionKey: "aiDurationLongDescription" },
+];
+
+const AI_VIDEO_RATIO_OPTIONS = [
+  { value: "9:16", labelKey: "aiRatioPortraitTitle", descriptionKey: "aiRatioPortraitDescription" },
+  { value: "1:1", labelKey: "aiRatioSquareTitle", descriptionKey: "aiRatioSquareDescription" },
+  { value: "16:9", labelKey: "aiRatioLandscapeTitle", descriptionKey: "aiRatioLandscapeDescription" },
+];
+
+const AI_VIDEO_RESOLUTION_OPTIONS = [
+  { value: "480p", labelKey: "aiResolutionEconomyTitle", descriptionKey: "aiResolutionEconomyDescription" },
+  { value: "720p", labelKey: "aiResolutionStandardTitle", descriptionKey: "aiResolutionStandardDescription" },
+  { value: "1080p", labelKey: "aiResolutionHighTitle", descriptionKey: "aiResolutionHighDescription" },
+];
+
+const AI_IMAGE_QUALITY_PRESETS = [
+  {
+    id: "economy",
+    labelKey: "imageQualityEconomyTitle",
+    descriptionKey: "imageQualityEconomyDescription",
+    model: "seedream-5-0-lite-260128",
+  },
+  {
+    id: "quality",
+    labelKey: "imageQualityQualityTitle",
+    descriptionKey: "imageQualityQualityDescription",
+    model: "seedream-4-5-251128",
+  },
+];
+
+const AI_IMAGE_SIZE_OPTIONS = [
+  { value: "2k", labelKey: "imageSizeSmallTitle", descriptionKey: "imageSizeSmallDescription" },
+  { value: "3k", labelKey: "imageSizeMediumTitle", descriptionKey: "imageSizeMediumDescription" },
+  { value: "4k", labelKey: "imageSizeLargeTitle", descriptionKey: "imageSizeLargeDescription" },
+];
+const STATIC_AI_IMAGE_EXAMPLE_URL = "/assets/examples/ai-image-example-seedream.jpg";
+const STATIC_AI_IMAGE_EXAMPLE_PROMPT =
+  "Uma imagem vertical cinematográfica de um criador de conteúdo trabalhando em um estúdio minimalista, luz natural entrando pela janela, notebook aberto com uma timeline de vídeo abstrata, câmera sobre a mesa, atmosfera moderna, cores claras, fotografia editorial, sem texto, sem logos.";
+const STATIC_AI_IMAGE_EXAMPLE_META = ["Alta qualidade", "2k"];
 
 const DEFAULT_FULL_VIDEO_SETTINGS = {
   provider: "moneyprinterturbo",
@@ -110,9 +186,13 @@ const I18N = {
     pageDescription:
       "Crie clipes por IA, narrações e cortes editáveis para seus vídeos.",
     workspaceEyebrowAi: "Criação com IA",
-    workspaceTitleAi: "Crie clipes de 4 segundos a partir de um prompt.",
+    workspaceTitleAi: "Crie clipes curtos a partir de um prompt.",
     workspaceDescriptionAi:
       "Descreva uma cena curta e gere um clipe visual com IA. Use imagem opcional quando quiser guiar o resultado.",
+    workspaceEyebrowImage: "Imagem com IA",
+    workspaceTitleImage: "Crie imagens para posts, capas e ideias visuais.",
+    workspaceDescriptionImage:
+      "Digite um prompt, escolha a qualidade e gere uma imagem pronta para usar.",
     workspaceEyebrowFull: "Vídeo completo",
     workspaceTitleFull: "Crie vídeos de até 1 minuto a partir de um roteiro.",
     workspaceDescriptionFull:
@@ -126,6 +206,7 @@ const I18N = {
     workspaceDescriptionTts:
       "Digite uma fala curta e gere áudio para usar nos seus vídeos.",
     tabAi: "Criar vídeo com IA",
+    tabImage: "Criar imagem com IA",
     tabFull: "Vídeo completo",
     tabLibrary: "Buscar vídeos por termos",
     tabTts: "Criar narração",
@@ -137,6 +218,12 @@ const I18N = {
     aiExampleTitle: "Homem fazendo um graffiti em uma parede de tijolos",
     aiExampleDescription: "Use um prompt curto para gerar um clipe visual com IA.",
     aiExampleDescriptionLatest: "Este é o vídeo mais recente criado por prompt.",
+    imageExampleKicker: "Modelo de imagem",
+    imageExampleKickerLatest: "Última imagem criada",
+    imageExampleTitle: "Crie imagens por prompt",
+    imageExampleDescription: "Gere imagens para posts, capas, anúncios e ideias visuais.",
+    imageExampleDescriptionLatest: "Esta é a imagem mais recente criada por prompt.",
+    imageExamplePromptLabel: "Prompt usado",
     fullExampleKicker: "Modelo de vídeo completo",
     fullExampleKickerLatest: "Último vídeo completo",
     fullExampleTitle: "Roteiro curto com narração, mídia e legenda",
@@ -160,7 +247,55 @@ const I18N = {
     searchVideos: "Buscar vídeos",
     searching: "Buscando...",
     optionalImage: "Imagem opcional",
-    aiSeedanceNote: "Gera um clipe vertical curto de 4 segundos.",
+    aiSeedanceNote: "Ajuste duração, formato e qualidade antes de gerar.",
+    aiQualityTitle: "Qualidade do clipe",
+    aiQualityDescription: "Escolha o equilíbrio entre velocidade, custo e qualidade visual.",
+    aiQualityFastTitle: "Mais rápido",
+    aiQualityFastDescription: "Ideal para testar ideias com menor espera.",
+    aiQualityEconomyTitle: "Mais econômico",
+    aiQualityEconomyDescription: "Bom para criar várias versões e experimentar mais.",
+    aiQualityBalancedTitle: "Padrão",
+    aiQualityBalancedDescription: "Mantém o resultado atual, com boa estabilidade.",
+    aiQualityQualityTitle: "Melhor qualidade",
+    aiQualityQualityDescription: "Prioriza acabamento visual, com maior consumo.",
+    aiDurationTitle: "Duração",
+    aiDurationDescription: "Quanto maior o clipe, maior tende a ser o consumo.",
+    aiDurationShortTitle: "Curto",
+    aiDurationShortDescription: "4 segundos",
+    aiDurationMediumTitle: "Médio",
+    aiDurationMediumDescription: "8 segundos",
+    aiDurationLongTitle: "Longo",
+    aiDurationLongDescription: "12 segundos",
+    aiRatioTitle: "Formato",
+    aiRatioDescription: "Escolha onde o clipe será melhor publicado.",
+    aiRatioPortraitTitle: "Retrato 9:16",
+    aiRatioPortraitDescription: "Celular em pé",
+    aiRatioSquareTitle: "Quadrado 1:1",
+    aiRatioSquareDescription: "Feed e posts quadrados",
+    aiRatioLandscapeTitle: "Paisagem 16:9",
+    aiRatioLandscapeDescription: "Celular deitado",
+    aiResolutionTitle: "Resolução",
+    aiResolutionDescription: "Use baixa resolução para testar e alta para versão final.",
+    aiResolutionEconomyTitle: "Econômica",
+    aiResolutionEconomyDescription: "480p",
+    aiResolutionStandardTitle: "Padrão",
+    aiResolutionStandardDescription: "720p",
+    aiResolutionHighTitle: "Alta",
+    aiResolutionHighDescription: "1080p",
+    imageQualityTitle: "Qualidade da imagem",
+    imageQualityDescription: "Escolha entre testar ideias com menor custo ou gerar uma imagem final mais caprichada.",
+    imageQualityEconomyTitle: "Econômica",
+    imageQualityEconomyDescription: "Boa para testar ideias e criar várias versões.",
+    imageQualityQualityTitle: "Alta qualidade",
+    imageQualityQualityDescription: "Prioriza fidelidade, detalhes e texto melhor na imagem.",
+    imageSizeTitle: "Tamanho",
+    imageSizeDescription: "Tamanhos maiores tendem a consumir mais e demorar mais.",
+    imageSizeSmallTitle: "Leve",
+    imageSizeSmallDescription: "2K",
+    imageSizeMediumTitle: "Padrão",
+    imageSizeMediumDescription: "3K",
+    imageSizeLargeTitle: "Grande",
+    imageSizeLargeDescription: "4K",
     visualCreation: "Criação visual",
     aiFlow: "Prompt -> clipe curto",
   },
@@ -169,9 +304,13 @@ const I18N = {
     pageDescription:
       "Create AI clips, narrations, and editable cuts for your videos.",
     workspaceEyebrowAi: "AI creation",
-    workspaceTitleAi: "Create 4-second clips from a prompt.",
+    workspaceTitleAi: "Create short clips from a prompt.",
     workspaceDescriptionAi:
       "Describe a short scene and generate an AI video clip. Add an optional image when you want to guide the result.",
+    workspaceEyebrowImage: "AI image",
+    workspaceTitleImage: "Create images for posts, covers, and visual ideas.",
+    workspaceDescriptionImage:
+      "Type a prompt, choose quality, and generate a ready-to-use image.",
     workspaceEyebrowFull: "Full video",
     workspaceTitleFull: "Create videos up to 1 minute from a script.",
     workspaceDescriptionFull:
@@ -185,6 +324,7 @@ const I18N = {
     workspaceDescriptionTts:
       "Type a short script and generate audio for your videos.",
     tabAi: "Create AI video",
+    tabImage: "Create AI image",
     tabFull: "Full video",
     tabLibrary: "Search videos by keyword",
     tabTts: "Create narration",
@@ -196,6 +336,12 @@ const I18N = {
     aiExampleTitle: "Man making graffiti on a brick wall",
     aiExampleDescription: "Use a short prompt to generate an AI visual clip.",
     aiExampleDescriptionLatest: "This is the latest video created from a prompt.",
+    imageExampleKicker: "Image example",
+    imageExampleKickerLatest: "Latest image",
+    imageExampleTitle: "Create images from prompts",
+    imageExampleDescription: "Generate images for posts, covers, ads, and visual ideas.",
+    imageExampleDescriptionLatest: "This is the latest image created from a prompt.",
+    imageExamplePromptLabel: "Prompt used",
     fullExampleKicker: "Full video example",
     fullExampleKickerLatest: "Latest full video",
     fullExampleTitle: "Short script with narration, media, and captions",
@@ -219,7 +365,55 @@ const I18N = {
     searchVideos: "Search videos",
     searching: "Searching...",
     optionalImage: "Optional image",
-    aiSeedanceNote: "Generates a short vertical 4-second clip.",
+    aiSeedanceNote: "Adjust duration, format, and quality before generating.",
+    aiQualityTitle: "Clip quality",
+    aiQualityDescription: "Choose the balance between speed, cost, and visual quality.",
+    aiQualityFastTitle: "Fastest",
+    aiQualityFastDescription: "Best for testing ideas with less waiting.",
+    aiQualityEconomyTitle: "More economical",
+    aiQualityEconomyDescription: "Good for creating multiple versions and experimenting more.",
+    aiQualityBalancedTitle: "Standard",
+    aiQualityBalancedDescription: "Keeps the current result with good stability.",
+    aiQualityQualityTitle: "Best quality",
+    aiQualityQualityDescription: "Prioritizes visual polish with higher usage.",
+    aiDurationTitle: "Duration",
+    aiDurationDescription: "Longer clips usually consume more.",
+    aiDurationShortTitle: "Short",
+    aiDurationShortDescription: "4 seconds",
+    aiDurationMediumTitle: "Medium",
+    aiDurationMediumDescription: "8 seconds",
+    aiDurationLongTitle: "Long",
+    aiDurationLongDescription: "12 seconds",
+    aiRatioTitle: "Format",
+    aiRatioDescription: "Choose where the clip will work best.",
+    aiRatioPortraitTitle: "Portrait 9:16",
+    aiRatioPortraitDescription: "Vertical phone",
+    aiRatioSquareTitle: "Square 1:1",
+    aiRatioSquareDescription: "Feed and square posts",
+    aiRatioLandscapeTitle: "Landscape 16:9",
+    aiRatioLandscapeDescription: "Horizontal phone",
+    aiResolutionTitle: "Resolution",
+    aiResolutionDescription: "Use low resolution for tests and high for final versions.",
+    aiResolutionEconomyTitle: "Economy",
+    aiResolutionEconomyDescription: "480p",
+    aiResolutionStandardTitle: "Standard",
+    aiResolutionStandardDescription: "720p",
+    aiResolutionHighTitle: "High",
+    aiResolutionHighDescription: "1080p",
+    imageQualityTitle: "Image quality",
+    imageQualityDescription: "Choose between testing ideas at lower cost or generating a more polished final image.",
+    imageQualityEconomyTitle: "Economy",
+    imageQualityEconomyDescription: "Good for testing ideas and creating multiple versions.",
+    imageQualityQualityTitle: "High quality",
+    imageQualityQualityDescription: "Prioritizes fidelity, details, and better text in the image.",
+    imageSizeTitle: "Size",
+    imageSizeDescription: "Larger sizes usually consume more and take longer.",
+    imageSizeSmallTitle: "Light",
+    imageSizeSmallDescription: "2K",
+    imageSizeMediumTitle: "Standard",
+    imageSizeMediumDescription: "3K",
+    imageSizeLargeTitle: "Large",
+    imageSizeLargeDescription: "4K",
     visualCreation: "Visual creation",
     aiFlow: "Prompt -> short clip",
   },
@@ -263,7 +457,9 @@ function updateWorkspaceIntro() {
   if (!els.workspaceEyebrow || !els.workspaceTitle || !els.workspaceDescription) return;
   const suffix = state.activeTab === "full"
     ? "Full"
-    : state.activeTab === "library"
+    : state.activeTab === "image"
+      ? "Image"
+      : state.activeTab === "library"
       ? "Library"
       : state.activeTab === "tts"
         ? "Tts"
@@ -326,6 +522,124 @@ function syncCreationButtonState() {
     els.fullVideoButton.disabled = active || !hasSelectedMedia;
     els.fullVideoButton.textContent = active ? t("creating") : t("generateSelected");
   }
+}
+
+function selectedAiVideoQualityPreset() {
+  const selectedId =
+    document.querySelector("input[name='seedance-quality']:checked")?.value ||
+    DEFAULT_CLIP_SETTINGS.qualityPreset;
+  return (
+    AI_VIDEO_QUALITY_PRESETS.find((preset) => preset.id === selectedId) ||
+    AI_VIDEO_QUALITY_PRESETS[0]
+  );
+}
+
+function selectedAiImageQualityPreset() {
+  const selectedId =
+    document.querySelector("input[name='image-quality']:checked")?.value ||
+    AI_IMAGE_QUALITY_PRESETS[0].id;
+  return (
+    AI_IMAGE_QUALITY_PRESETS.find((preset) => preset.id === selectedId) ||
+    AI_IMAGE_QUALITY_PRESETS[0]
+  );
+}
+
+function selectedAiOption(name, fallback) {
+  return document.querySelector(`input[name='${name}']:checked`)?.value || fallback;
+}
+
+function renderAiOptionGroup({ titleKey, descriptionKey, name, options, defaultValue }) {
+  return `
+    <section class="creation-mode-panel ai-parameter-panel" aria-labelledby="${escapeHtml(name)}-title">
+      <div class="creation-mode-head">
+        <strong id="${escapeHtml(name)}-title">${escapeHtml(t(titleKey))}</strong>
+        <span>${escapeHtml(t(descriptionKey))}</span>
+      </div>
+      <div class="creation-mode-options ai-parameter-options" role="radiogroup" aria-label="${escapeHtml(t(titleKey))}">
+        ${options.map((option) => `
+          <label class="creation-mode-card ai-parameter-card">
+            <input
+              type="radio"
+              name="${escapeHtml(name)}"
+              value="${escapeHtml(option.value)}"
+              ${String(option.value) === String(defaultValue) ? "checked" : ""}
+            />
+            <span>
+              <strong>${escapeHtml(t(option.labelKey))}</strong>
+              <small>${escapeHtml(t(option.descriptionKey))}</small>
+            </span>
+          </label>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderAiVideoQualityOptions() {
+  if (!els.seedanceQualityOptions) return;
+  els.seedanceQualityOptions.innerHTML = `
+    <section class="creation-mode-panel ai-quality-panel" aria-labelledby="ai-quality-title">
+      <div class="creation-mode-head">
+        <strong id="ai-quality-title">${escapeHtml(t("aiQualityTitle"))}</strong>
+        <span>${escapeHtml(t("aiQualityDescription"))}</span>
+      </div>
+      <div class="creation-mode-options" role="radiogroup" aria-label="${escapeHtml(t("aiQualityTitle"))}">
+        ${AI_VIDEO_QUALITY_PRESETS.map((preset) => `
+          <label class="creation-mode-card">
+            <input
+              type="radio"
+              name="seedance-quality"
+              value="${escapeHtml(preset.id)}"
+              ${preset.id === DEFAULT_CLIP_SETTINGS.qualityPreset ? "checked" : ""}
+            />
+            <span>
+              <strong>${escapeHtml(t(preset.labelKey))}</strong>
+              <small>${escapeHtml(t(preset.descriptionKey))}</small>
+            </span>
+          </label>
+        `).join("")}
+      </div>
+    </section>
+    ${renderAiOptionGroup({
+      titleKey: "aiDurationTitle",
+      descriptionKey: "aiDurationDescription",
+      name: "seedance-duration",
+      options: AI_VIDEO_DURATION_OPTIONS,
+      defaultValue: DEFAULT_CLIP_SETTINGS.duration,
+    })}
+    ${renderAiOptionGroup({
+      titleKey: "aiRatioTitle",
+      descriptionKey: "aiRatioDescription",
+      name: "seedance-ratio",
+      options: AI_VIDEO_RATIO_OPTIONS,
+      defaultValue: DEFAULT_CLIP_SETTINGS.ratio,
+    })}
+    ${renderAiOptionGroup({
+      titleKey: "aiResolutionTitle",
+      descriptionKey: "aiResolutionDescription",
+      name: "seedance-resolution",
+      options: AI_VIDEO_RESOLUTION_OPTIONS,
+      defaultValue: DEFAULT_CLIP_SETTINGS.resolution,
+    })}
+  `;
+}
+
+function renderAiImageOptions() {
+  if (!els.imageQualityOptions || !els.imageSizeOptions) return;
+  els.imageQualityOptions.innerHTML = renderAiOptionGroup({
+    titleKey: "imageQualityTitle",
+    descriptionKey: "imageQualityDescription",
+    name: "image-quality",
+    options: AI_IMAGE_QUALITY_PRESETS,
+    defaultValue: AI_IMAGE_QUALITY_PRESETS[0].id,
+  });
+  els.imageSizeOptions.innerHTML = renderAiOptionGroup({
+    titleKey: "imageSizeTitle",
+    descriptionKey: "imageSizeDescription",
+    name: "image-size",
+    options: AI_IMAGE_SIZE_OPTIONS,
+    defaultValue: "2k",
+  });
 }
 
 function stepLabel(stepKey) {
@@ -996,6 +1310,34 @@ function renderAudioResults() {
   renderWorkspaceExamples();
 }
 
+function renderImageResults() {
+  if (!els.imageResults || !els.imageResultsMeta) return;
+  if (!state.imageResults.length) {
+    els.imageResultsMeta.textContent = "As últimas imagens geradas aparecem aqui.";
+    els.imageResults.innerHTML = '<div class="empty-state">Nenhuma imagem criada ainda.</div>';
+    renderWorkspaceExamples();
+    return;
+  }
+
+  els.imageResultsMeta.textContent = `${state.imageResults.length} imagens disponíveis`;
+  els.imageResults.innerHTML = state.imageResults
+    .map(
+      (image) => `
+        <article class="media-card image-result-card">
+          <div class="media-thumb image-result-thumb">
+            <img src="${escapeHtml(image.imageUrl)}" alt="${escapeHtml(image.title)}" loading="lazy" />
+          </div>
+          <div class="media-card-copy">
+            <strong>${escapeHtml(image.title)}</strong>
+            <span>${escapeHtml(image.source)} · ${escapeHtml(image.metadata?.size || "imagem")}</span>
+            <a class="secondary-button" href="${escapeHtml(image.imageUrl)}" target="_blank" rel="noreferrer">Abrir imagem</a>
+          </div>
+        </article>`
+    )
+    .join("");
+  renderWorkspaceExamples();
+}
+
 function syncTimelinePlayer() {
   const clips = timelineVideoClips(state.jobs);
   const audioClips = timelineAudioClips();
@@ -1142,6 +1484,11 @@ function audioPreviewMarkup(url, label = "Ouvir exemplo") {
   return `<audio src="${escapeHtml(url)}" controls preload="metadata" aria-label="${escapeHtml(label)}"></audio>`;
 }
 
+function imagePreviewMarkup(url, label = "Imagem criada com IA") {
+  if (!url) return "";
+  return `<img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" loading="lazy" />`;
+}
+
 function renderExampleCard(element, options) {
   if (!element) return;
   const previewClass = options.previewClass || "";
@@ -1154,6 +1501,8 @@ function renderExampleCard(element, options) {
       <span class="tab-example-kicker">${escapeHtml(options.kicker)}</span>
       <strong>${escapeHtml(options.title)}</strong>
       <p>${escapeHtml(options.description)}</p>
+      ${Array.isArray(options.meta) && options.meta.length ? `<div class="tab-example-meta">${options.meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+      ${options.promptText ? `<div class="tab-example-prompt"><span>${escapeHtml(options.promptLabel || "Prompt")}</span><p>${escapeHtml(options.promptText)}</p></div>` : ""}
       ${options.actionUrl ? `<a href="${escapeHtml(options.actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(options.actionLabel || t("openExample"))}</a>` : ""}
     </div>
   `;
@@ -1173,6 +1522,26 @@ function renderWorkspaceExamples() {
     preview: mediaPreviewMarkup(aiJob?.videoUrl, "Último vídeo criado com IA"),
     previewLabel: "IA",
     actionUrl: aiJob?.videoUrl,
+  });
+
+  const image = state.imageResults[0];
+  renderExampleCard(els.imageExampleCard, {
+    kicker: image ? t("imageExampleKickerLatest") : t("imageExampleKicker"),
+    title: image?.title || t("imageExampleTitle"),
+    description: image
+      ? t("imageExampleDescriptionLatest")
+      : t("imageExampleDescription"),
+    previewClass: "tab-example-preview-image",
+    preview: imagePreviewMarkup(
+      image?.imageUrl || STATIC_AI_IMAGE_EXAMPLE_URL,
+      image ? "Última imagem criada com IA" : "Exemplo de imagem com IA"
+    ),
+    previewLabel: "IMG",
+    actionUrl: image?.imageUrl || STATIC_AI_IMAGE_EXAMPLE_URL,
+    actionLabel: t("openResult"),
+    meta: image ? [] : STATIC_AI_IMAGE_EXAMPLE_META,
+    promptLabel: t("imageExamplePromptLabel"),
+    promptText: image ? "" : STATIC_AI_IMAGE_EXAMPLE_PROMPT,
   });
 
   const fullJob = preferredFullVideoJob() || latestJobBy(
@@ -1301,14 +1670,16 @@ function normalizeMediaAsset(asset) {
   return {
     id: asset.id,
     title: asset.title || asset.prompt || "Asset",
-    duration: Number(asset.duration || 4),
+    duration: asset.type === "image" ? null : Number(asset.duration || 4),
     videoUrl: asset.videoUrl || (asset.type === "video" ? asset.url : ""),
     audioUrl: asset.audioUrl || (asset.type === "audio" ? asset.url : ""),
+    imageUrl: asset.imageUrl || (asset.type === "image" ? asset.url : ""),
     source: asset.provider === "byteplus" ? "IA" : asset.provider || "asset",
     type: asset.type,
     width: asset.width || metadata.width || "",
     height: asset.height || metadata.height || "",
     thumbnailUrl: asset.thumbnailUrl || metadata.thumbnail_url || metadata.thumbnailUrl || "",
+    metadata,
     createdAt: asset.createdAt,
   };
 }
@@ -1324,6 +1695,20 @@ async function loadMediaAssets() {
   } catch (error) {
     console.warn(error);
     renderMediaResults();
+  }
+}
+
+async function loadImageAssets() {
+  if (!els.imageResults) return;
+  try {
+    const payload = await fetchJson("/api/media/assets?type=image&limit=12");
+    state.imageResults = Array.isArray(payload.assets)
+      ? payload.assets.map(normalizeMediaAsset).filter((asset) => asset?.imageUrl)
+      : [];
+    renderImageResults();
+  } catch (error) {
+    console.warn(error);
+    renderImageResults();
   }
 }
 
@@ -1426,7 +1811,15 @@ function showInlineError(title, message) {
 }
 
 async function buildGenerationSettings() {
-  const settings = { ...DEFAULT_CLIP_SETTINGS };
+  const preset = selectedAiVideoQualityPreset();
+  const settings = {
+    ...DEFAULT_CLIP_SETTINGS,
+    model: preset.model,
+    qualityPreset: preset.id,
+    duration: Number(selectedAiOption("seedance-duration", DEFAULT_CLIP_SETTINGS.duration)),
+    ratio: selectedAiOption("seedance-ratio", DEFAULT_CLIP_SETTINGS.ratio),
+    resolution: selectedAiOption("seedance-resolution", preset.resolution || DEFAULT_CLIP_SETTINGS.resolution),
+  };
 
   const image = els.seedanceImage.files?.[0] || null;
   if (!image) return settings;
@@ -1444,6 +1837,75 @@ async function buildGenerationSettings() {
 
   settings.imageDataUrl = await readFileAsDataUrl(image);
   return settings;
+}
+
+async function buildImageGenerationSettings() {
+  const preset = selectedAiImageQualityPreset();
+  const settings = {
+    provider: "byteplus",
+    model: preset.model,
+    qualityPreset: preset.id,
+    size: selectedAiOption("image-size", "2k"),
+    outputFormat: "jpeg",
+  };
+
+  const image = els.imageReference?.files?.[0] || null;
+  if (!image) return settings;
+  if (!image.type.startsWith("image/")) {
+    showInlineError("Imagem inválida", "Envie uma imagem PNG, JPG ou WebP.");
+    return null;
+  }
+  if (image.size > MAX_SEEDANCE_IMAGE_BYTES) {
+    showInlineError(
+      "Imagem muito grande",
+      "Use uma imagem de até 8 MB para este primeiro MVP."
+    );
+    return null;
+  }
+
+  settings.imageDataUrl = await readFileAsDataUrl(image);
+  return settings;
+}
+
+async function createAiImage() {
+  const prompt = els.imagePrompt.value.trim();
+  if (!prompt) return;
+
+  const settings = await buildImageGenerationSettings();
+  if (!settings) return;
+
+  els.imageButton.disabled = true;
+  els.imageButton.textContent = "Gerando...";
+  els.imageResultsMeta.textContent = "Gerando imagem com IA.";
+  try {
+    const payload = await fetchJson("/api/images/generate", {
+      method: "POST",
+      body: JSON.stringify({ prompt, settings }),
+    });
+    const image = normalizeMediaAsset({
+      ...payload.image,
+      type: "image",
+      url: payload.image?.imageUrl || payload.image?.url,
+    });
+    if (image) {
+      state.imageResults = [image, ...state.imageResults.filter((item) => item.id !== image.id)];
+    }
+    renderImageResults();
+  } catch (error) {
+    els.imageResultsMeta.textContent = "Falha ao gerar imagem.";
+    els.imageResults.innerHTML = `
+      <div class="job-card">
+        <div class="job-card-head">
+          <strong>Não foi possível gerar a imagem</strong>
+          <span class="status-failed">Erro</span>
+        </div>
+        <div>${escapeHtml(error instanceof Error ? error.message : String(error))}</div>
+      </div>
+    `;
+  } finally {
+    els.imageButton.disabled = false;
+    els.imageButton.textContent = "Gerar imagem";
+  }
 }
 
 function buildFullVideoSettings(prompt = "") {
@@ -1494,13 +1956,16 @@ function buildFullVideoSettings(prompt = "") {
 }
 
 function setActiveTab(tab) {
-  state.activeTab = ["tts"].includes(tab) ? tab : "ai";
+  state.activeTab = "ai";
   document.querySelectorAll(".workspace-tab").forEach((button) => {
     const isActive = button.getAttribute("data-tab") === state.activeTab;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-selected", String(isActive));
   });
   els.form.hidden = state.activeTab !== "ai";
+  if (els.imageForm) {
+    els.imageForm.hidden = state.activeTab !== "image";
+  }
   if (els.fullVideoForm) {
     els.fullVideoForm.hidden = true;
     els.fullVideoForm.setAttribute("aria-hidden", "true");
@@ -1657,6 +2122,13 @@ function bindEvents() {
     await submitPrompt(prompt, "ai");
   });
 
+  if (els.imageForm) {
+    els.imageForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await createAiImage();
+    });
+  }
+
   els.fullVideoForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const prompt = els.fullVideoPrompt.value.trim();
@@ -1757,12 +2229,29 @@ function bindEvents() {
 }
 
 async function init() {
+  if (
+    location.pathname === "/" ||
+    location.pathname.endsWith("/index.html") ||
+    location.pathname.endsWith("/studio.html")
+  ) {
+    location.replace("/clipper.html");
+    return;
+  }
   state.locale = detectLocale();
   els.form = $("#prompt-form");
+  els.imageForm = $("#image-form");
   els.fullVideoForm = $("#full-video-form");
   els.mediaSearchForm = $("#media-search-form");
   els.ttsForm = $("#tts-form");
   els.prompt = $("#prompt");
+  els.imagePrompt = $("#image-prompt");
+  els.imageReference = $("#image-reference");
+  els.imageQualityOptions = $("#image-quality-options");
+  els.imageSizeOptions = $("#image-size-options");
+  els.imageButton = $("#image-button");
+  els.imageResults = $("#image-results");
+  els.imageResultsMeta = $("#image-results-meta");
+  els.imageExampleCard = $("#image-example-card");
   els.fullVideoPrompt = $("#full-video-prompt");
   els.fullVideoVoice = $("#full-video-voice");
   els.fullMediaMode = $("#full-media-mode");
@@ -1779,6 +2268,7 @@ async function init() {
   els.ttsText = $("#tts-text");
   els.ttsVoice = $("#tts-voice");
   els.ttsVoiceGrid = $("#tts-voice-grid");
+  els.seedanceQualityOptions = $("#seedance-quality-options");
   els.aiExampleCard = $("#ai-example-card");
   els.fullExampleCard = $("#full-example-card");
   els.ttsExampleCard = $("#tts-example-card");
@@ -1816,9 +2306,12 @@ async function init() {
   els.workspaceDescription = $("[data-workspace-description]");
 
   applyI18n();
+  renderAiVideoQualityOptions();
+  renderAiImageOptions();
   bindEvents();
   await loadConfig();
   await loadJobs();
+  await loadImageAssets();
   await loadAudioAssets();
 
   const lastPrompt = localStorage.getItem("mpt:last-prompt");
@@ -1829,9 +2322,15 @@ async function init() {
   if (lastFullPrompt && !els.fullVideoPrompt.value.trim()) {
     els.fullVideoPrompt.value = lastFullPrompt;
   }
+  const lastImagePrompt = localStorage.getItem("mpt:last-image-prompt");
+  if (lastImagePrompt && els.imagePrompt && !els.imagePrompt.value.trim()) {
+    els.imagePrompt.value = lastImagePrompt;
+  }
   syncFullSubtitleInputs();
-  setActiveTab(localStorage.getItem("mpt:active-tab") || "ai");
+  const urlTab = new URLSearchParams(window.location.search).get("tab");
+  setActiveTab(urlTab || localStorage.getItem("mpt:active-tab") || "ai");
   renderFullVideoSuggestions();
+  renderImageResults();
   renderAudioResults();
   els.prompt.addEventListener("input", () => {
     localStorage.setItem("mpt:last-prompt", els.prompt.value);
@@ -1839,6 +2338,11 @@ async function init() {
   els.fullVideoPrompt.addEventListener("input", () => {
     localStorage.setItem("mpt:last-full-prompt", els.fullVideoPrompt.value);
   });
+  if (els.imagePrompt) {
+    els.imagePrompt.addEventListener("input", () => {
+      localStorage.setItem("mpt:last-image-prompt", els.imagePrompt.value);
+    });
+  }
 }
 
 init().catch((error) => {

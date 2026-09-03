@@ -34,7 +34,7 @@ create index if not exists video_jobs_user_id_created_at_idx
 create table if not exists public.media_assets (
   id text primary key,
   user_id uuid references auth.users(id) on delete cascade,
-  type text not null check (type in ('video', 'audio')),
+  type text not null check (type in ('video', 'audio', 'image')),
   provider text not null,
   title text not null,
   prompt text,

@@ -24,6 +24,7 @@ function toClientAsset(row: MediaAssetRow) {
     url: assetUrl(row),
     videoUrl: row.type === "video" ? assetUrl(row) : null,
     audioUrl: row.type === "audio" ? assetUrl(row) : null,
+    imageUrl: row.type === "image" ? assetUrl(row) : null,
     metadata: row.metadata || {},
     createdAt: row.created_at,
   };
@@ -41,7 +42,7 @@ export async function onRequestGet({
 
   const url = new URL(request.url);
   const type = url.searchParams.get("type") || undefined;
-  if (type && type !== "video" && type !== "audio") {
+  if (type && type !== "video" && type !== "audio" && type !== "image") {
     return jsonError("invalid media asset type");
   }
   try {

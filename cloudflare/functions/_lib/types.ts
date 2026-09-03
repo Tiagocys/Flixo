@@ -100,7 +100,7 @@ export interface JobRow {
   updated_at: string;
 }
 
-export type MediaAssetType = "video" | "audio";
+export type MediaAssetType = "video" | "audio" | "image";
 
 export interface MediaAssetRow {
   id: string;

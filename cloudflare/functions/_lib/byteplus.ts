@@ -10,6 +10,15 @@ const DEFAULT_BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3";
 const DEFAULT_VIDEO_MODEL = "seedance-1-5-pro-251215";
 
 const MODEL_IDS: Record<string, string> = {
+  "dreamina-seedance-2-0-mini": "dreamina-seedance-2-0-mini-260615",
+  "dreamina-seedance-2-0-mini-260615": "dreamina-seedance-2-0-mini-260615",
+  "dreamina-seedance-2-0-fast": "dreamina-seedance-2-0-fast-260128",
+  "dreamina-seedance-2-0-fast-260128": "dreamina-seedance-2-0-fast-260128",
+  "dreamina-seedance-2-0": "dreamina-seedance-2-0-260128",
+  "dreamina-seedance-2-0-260128": "dreamina-seedance-2-0-260128",
+  "Dreamina-Seedance-2.0-mini": "dreamina-seedance-2-0-mini-260615",
+  "Dreamina-Seedance-2.0-fast": "dreamina-seedance-2-0-fast-260128",
+  "Dreamina-Seedance-2.0": "dreamina-seedance-2-0-260128",
   "seedance-1.0-pro-fast": "seedance-1-0-pro-fast-251015",
   "seedance-1.0-pro": "seedance-1-0-pro-250528",
   "seedance-1.5-pro": "seedance-1-5-pro-251215",
@@ -255,6 +264,7 @@ export async function syncFromBytePlus(
       metadata: {
         job_id: job.id,
         backend_task_id: job.backend_task_id,
+        quality_preset: job.settings.qualityPreset || job.settings.quality_preset || null,
         resolution: normalizeResolution(job.settings.resolution),
         ratio: normalizeRatio(job.settings.ratio),
       },

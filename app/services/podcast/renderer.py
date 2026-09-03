@@ -16,6 +16,18 @@ _SUBTITLE_MARGIN_BELOW_SQUARE = 45
 _WORK_CRF = os.getenv("PODCAST_RENDER_WORK_CRF", "20")
 _OUTPUT_CRF = os.getenv("PODCAST_RENDER_OUTPUT_CRF", "20")
 _AUDIO_BITRATE = os.getenv("PODCAST_RENDER_AUDIO_BITRATE", "160k")
+_WATERMARK_TEXT = os.getenv(
+    "CLIPPER_WATERMARK_TEXT",
+    os.getenv("PODCAST_WATERMARK_TEXT", "Copacabena.com"),
+).strip()
+_WATERMARK_ENABLED = os.getenv(
+    "CLIPPER_WATERMARK_ENABLED",
+    os.getenv("PODCAST_WATERMARK_ENABLED", "true"),
+).strip().lower() not in {"0", "false", "no", "off"}
+_WATERMARK_FONT_FILE = os.getenv(
+    "CLIPPER_WATERMARK_FONT_FILE",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+)
 
 
 def render_podcast_clip(
@@ -493,6 +505,11 @@ def _apply_text_overlays(
         video_filter += f";[v]subtitles={_quote_filter_path(ass_path)}[vs]"
         map_video = "[vs]"
 
+    watermark_filter = _watermark_filter(render_width, render_height)
+    if watermark_filter:
+        video_filter += f";{map_video}{watermark_filter}[vw]"
+        map_video = "[vw]"
+
     _run(
         [
             utils.get_ffmpeg_binary(),
@@ -603,6 +620,35 @@ def _write_ass_subtitles(
         lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{_ass_text(text)}")
     Path(ass_path).write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
     return ass_path
+
+
+def _watermark_filter(render_width: int = 1080, render_height: int = 1920) -> str:
+    if not _WATERMARK_ENABLED or not _WATERMARK_TEXT:
+        return ""
+    base = max(1, min(render_width, render_height))
+    font_size = max(22, int(base * 0.038))
+    margin = max(28, int(base * 0.035))
+    font_option = ""
+    if _WATERMARK_FONT_FILE and os.path.isfile(_WATERMARK_FONT_FILE):
+        font_option = f"fontfile={_escape_drawtext_value(_WATERMARK_FONT_FILE)}:"
+    text = _escape_drawtext_value(_WATERMARK_TEXT)
+    return (
+        f"drawtext={font_option}text='{text}':"
+        f"x=w-tw-{margin}:y={margin}:fontsize={font_size}:"
+        "fontcolor=white@0.76:bordercolor=black@0.58:borderw=3:"
+        "shadowcolor=black@0.35:shadowx=2:shadowy=2"
+    )
+
+
+def _escape_drawtext_value(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+        .replace(",", "\\,")
+    )
 
 
 def _read_srt_events(path: str) -> list[tuple[float, float, str]]:
