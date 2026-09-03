@@ -10,6 +10,7 @@ from app.services.podcast.camera import detect_speaker_camera
 from app.utils import utils
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _SQUARE_TOP = int((1920 - 1080) / 2)
 _SUBTITLE_FONT_SIZE = 14
 _SUBTITLE_MARGIN_BELOW_SQUARE = 45
@@ -27,6 +28,10 @@ _WATERMARK_ENABLED = os.getenv(
 _WATERMARK_FONT_FILE = os.getenv(
     "CLIPPER_WATERMARK_FONT_FILE",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+)
+_WATERMARK_ICON_FILE = os.getenv(
+    "CLIPPER_WATERMARK_ICON_FILE",
+    str(_PROJECT_ROOT / "cloudflare/pages/assets/watermark/copacabena-icon-white.png"),
 )
 
 
@@ -505,17 +510,25 @@ def _apply_text_overlays(
         video_filter += f";[v]subtitles={_quote_filter_path(ass_path)}[vs]"
         map_video = "[vs]"
 
-    watermark_filter = _watermark_filter(render_width, render_height)
+    watermark_filter, watermark_input_args = _watermark_filter(
+        map_video,
+        render_width,
+        render_height,
+        subtitle_position,
+    )
     if watermark_filter:
-        video_filter += f";{map_video}{watermark_filter}[vw]"
+        video_filter += f";{watermark_filter}"
         map_video = "[vw]"
 
-    _run(
+    command = [
+        utils.get_ffmpeg_binary(),
+        "-y",
+        "-i",
+        input_path,
+    ]
+    command.extend(watermark_input_args)
+    command.extend(
         [
-            utils.get_ffmpeg_binary(),
-            "-y",
-            "-i",
-            input_path,
             "-filter_complex",
             video_filter,
             "-map",
@@ -535,7 +548,10 @@ def _apply_text_overlays(
             "-movflags",
             "+faststart",
             output_path,
-        ],
+        ]
+    )
+    _run(
+        command,
         "Falha ao renderizar podcast vertical",
     )
 
@@ -622,22 +638,56 @@ def _write_ass_subtitles(
     return ass_path
 
 
-def _watermark_filter(render_width: int = 1080, render_height: int = 1920) -> str:
+def _watermark_filter(
+    input_label: str,
+    render_width: int = 1080,
+    render_height: int = 1920,
+    subtitle_position: str = "middle",
+) -> tuple[str, list[str]]:
     if not _WATERMARK_ENABLED or not _WATERMARK_TEXT:
-        return ""
+        return "", []
     base = max(1, min(render_width, render_height))
-    font_size = max(22, int(base * 0.038))
-    margin = max(28, int(base * 0.035))
+    font_size = max(24, int(base * 0.04))
+    icon_size = max(40, int(base * 0.055))
+    gap = max(10, int(base * 0.012))
+    margin = max(30, int(base * 0.04))
+    subtitle_position = normalize_subtitle_position(subtitle_position)
+    is_bottom_watermark = subtitle_position == "top"
+    y = render_height - icon_size - margin if is_bottom_watermark else margin
+    text_y = y + max(0, int((icon_size - font_size) / 2) - 2)
+    text_width_estimate = max(font_size * 4, int(len(_WATERMARK_TEXT) * font_size * 0.58))
+    group_width = icon_size + gap + text_width_estimate
+    slide_seconds = "0.72"
+    icon_x = (
+        f"if(lt(t\\,{slide_seconds})\\,"
+        f"main_w-(t/{slide_seconds})*({group_width}+{margin})\\,"
+        f"main_w-{group_width}-{margin})"
+    )
+    text_x = (
+        f"if(lt(t\\,{slide_seconds})\\,"
+        f"w-(t/{slide_seconds})*(tw+{margin})\\,"
+        f"w-tw-{margin})"
+    )
     font_option = ""
     if _WATERMARK_FONT_FILE and os.path.isfile(_WATERMARK_FONT_FILE):
         font_option = f"fontfile={_escape_drawtext_value(_WATERMARK_FONT_FILE)}:"
     text = _escape_drawtext_value(_WATERMARK_TEXT)
-    return (
-        f"drawtext={font_option}text='{text}':"
-        f"x=w-tw-{margin}:y={margin}:fontsize={font_size}:"
-        "fontcolor=white@0.76:bordercolor=black@0.58:borderw=3:"
-        "shadowcolor=black@0.35:shadowx=2:shadowy=2"
+    drawtext = (
+        f"drawtext={font_option}text='{text}':x='{text_x}':y={text_y}:fontsize={font_size}:"
+        "fontcolor=white@0.84:bordercolor=black@0.58:borderw=3:"
+        "shadowcolor=black@0.34:shadowx=2:shadowy=2"
     )
+    if not (_WATERMARK_ICON_FILE and os.path.isfile(_WATERMARK_ICON_FILE)):
+        return f"{input_label}{drawtext}[vw]", []
+    icon_filter = (
+        f"[1:v]format=rgba,scale={icon_size}:{icon_size}:force_original_aspect_ratio=decrease,"
+        f"pad={icon_size}:{icon_size}:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+        f"setpts=PTS-STARTPTS,rotate=2*PI*t:fillcolor=none:ow={icon_size}:oh={icon_size},format=rgba[wmi];"
+        f"{input_label}[wmi]overlay=x='{icon_x}':y={y}:format=auto:shortest=1[wmicon];"
+        f"[wmicon]{drawtext}[vw]"
+    )
+    input_args = ["-loop", "1", "-framerate", "30", "-i", _WATERMARK_ICON_FILE]
+    return icon_filter, input_args
 
 
 def _escape_drawtext_value(value: str) -> str:

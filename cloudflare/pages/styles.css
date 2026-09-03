@@ -1044,6 +1044,23 @@ button:active {
   text-transform: uppercase;
 }
 
+.copacabena-brand {
+  display: inline-flex;
+  align-items: center;
+  width: min(340px, 82vw);
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  text-decoration: none;
+}
+
+.copacabena-brand img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .clipper-topbar h1 {
   max-width: 760px;
   font-size: clamp(2.2rem, 5vw, 4.8rem);
