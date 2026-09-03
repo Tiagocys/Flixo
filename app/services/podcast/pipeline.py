@@ -154,6 +154,7 @@ def render_job(
     subtitle_border_color: str = "black",
     subtitle_size: str = "medium",
     subtitle_position: str = "middle",
+    watermark_enabled: bool = True,
 ) -> None:
     try:
         job = registry.get_job(job_id) or restore_job_from_metadata(job_id)
@@ -206,6 +207,7 @@ def render_job(
                 subtitle_border_color=subtitle_border_color,
                 subtitle_size=subtitle_size,
                 subtitle_position=subtitle_position,
+                watermark_enabled=watermark_enabled,
             )
             outputs.append(_output_payload(candidate, render_result))
             _update_render_eta(job_id, index, len(selected_ids))
@@ -264,6 +266,7 @@ def _output_payload(candidate: ClipCandidate, render_result: dict) -> dict:
         "subtitle_border_color": render_result.get("subtitle_border_color") or "black",
         "subtitle_size": render_result.get("subtitle_size") or "medium",
         "subtitle_position": render_result.get("subtitle_position") or "middle",
+        "watermark_enabled": bool(render_result.get("watermark_enabled", True)),
         "clip_format": render_result.get("clip_format") or "auto",
         "hook": candidate.hook,
         "summary": candidate.summary,
@@ -397,6 +400,7 @@ def update_output_subtitle(
         subtitle_border_color=subtitle_border_color,
         subtitle_size=subtitle_size,
         subtitle_position=subtitle_position,
+        watermark_enabled=bool(output.get("watermark_enabled", True)),
     )
     output = _persist_output_assets(job_id, {
         **output,
@@ -463,6 +467,7 @@ def update_output_subtitle_mode(
         subtitle_border_color=subtitle_border_color,
         subtitle_size=subtitle_size,
         subtitle_position=subtitle_position,
+        watermark_enabled=bool(output.get("watermark_enabled", True)),
     )
     output = _persist_output_assets(job_id, {
         **output,

@@ -19,6 +19,7 @@ const state = {
   renderSelectionLocked: false,
   youtubeAuthorized: false,
   youtubeConfigured: false,
+  billing: null,
 };
 
 const PODCAST_LAST_JOB_KEY = "flixo.podcast.lastJobId";
@@ -44,6 +45,9 @@ const els = {
   outputs: document.getElementById("podcast-outputs"),
   youtubeStatusMeta: document.getElementById("podcast-youtube-status-meta"),
   youtubeConnectButton: document.getElementById("podcast-youtube-connect-button"),
+  billingStatusMeta: document.getElementById("billing-status-meta"),
+  billingCheckoutButton: document.getElementById("billing-checkout-button"),
+  billingPortalButton: document.getElementById("billing-portal-button"),
   youtubeUploadAllButton: document.getElementById("podcast-youtube-upload-all-button"),
   downloadThumbnailsButton: document.getElementById("podcast-download-thumbnails-button"),
   downloadSubtitlesButton: document.getElementById("podcast-download-subtitles-button"),
@@ -260,14 +264,18 @@ function publishAtIsoValue(outputId) {
   return date.toISOString();
 }
 
-function confirmAction({ title, message, confirmLabel = "Confirmar", cancelLabel = "Cancelar" }) {
+function confirmAction({ title, message, messageHtml, confirmLabel = "Confirmar", cancelLabel = "Cancelar" }) {
   if (!els.confirmModal || !els.confirmTitle || !els.confirmMessage || !els.confirmAccept) {
     return Promise.resolve(window.confirm(`${title}\n\n${message}`));
   }
 
   const previouslyFocused = document.activeElement;
   els.confirmTitle.textContent = title;
-  els.confirmMessage.textContent = message;
+  if (messageHtml) {
+    els.confirmMessage.innerHTML = messageHtml;
+  } else {
+    els.confirmMessage.textContent = message;
+  }
   els.confirmAccept.textContent = confirmLabel;
   els.confirmCancelButtons.forEach((button) => {
     button.textContent = cancelLabel;
@@ -3653,6 +3661,71 @@ async function connectYoutube() {
   window.location.href = authorizationUrl;
 }
 
+function setBillingStatus(payload) {
+  state.billing = payload || null;
+  if (!els.billingStatusMeta) return;
+  const status = String(payload?.status || "free").toLowerCase();
+  const isPro = payload?.plan === "pro" || ["active", "trialing"].includes(status);
+  if (!payload?.configured) {
+    els.billingStatusMeta.textContent = "Assinaturas em configuração.";
+  } else if (isPro) {
+    els.billingStatusMeta.textContent = payload?.cancelAtPeriodEnd
+      ? "Plano Pro ativo até o fim do ciclo."
+      : "Plano Pro ativo.";
+  } else {
+    els.billingStatusMeta.textContent = "Plano gratuito com marca d'água.";
+  }
+  if (els.billingCheckoutButton) {
+    els.billingCheckoutButton.hidden = isPro;
+    els.billingCheckoutButton.disabled = !payload?.configured;
+    els.billingCheckoutButton.textContent = payload?.configured ? "Assinar Pro" : "Assinaturas em configuração";
+  }
+  if (els.billingPortalButton) {
+    els.billingPortalButton.hidden = !payload?.hasStripeCustomer;
+  }
+}
+
+async function refreshBillingStatus() {
+  const payload = await fetch("/api/billing/status").then(readJson);
+  setBillingStatus(payload);
+}
+
+async function startBillingCheckout() {
+  if (!els.billingCheckoutButton) return;
+  const accepted = await confirmAction({
+    title: "Assinar Clipper Beta",
+    messageHtml:
+      "Você está assinando o Clipper Beta por R$ 40/mês. Este valor é promocional durante o beta porque ainda usamos infraestrutura inicial; até migrarmos para servidor dedicado, alguns processos podem demorar mais em horários de uso intenso.<br><br>Ao continuar, você confirma que leu e aceita os <a href=\"/termos.html\" target=\"_blank\" rel=\"noopener\">Termos de Serviço</a> e a <a href=\"/privacidade.html\" target=\"_blank\" rel=\"noopener\">Política de Privacidade</a>.",
+    confirmLabel: "Aceitar e assinar",
+    cancelLabel: "Cancelar",
+  });
+  if (!accepted) return;
+  els.billingCheckoutButton.disabled = true;
+  els.billingCheckoutButton.textContent = "Abrindo checkout...";
+  try {
+    const payload = await fetch("/api/billing/checkout", { method: "POST" }).then(readJson);
+    if (!payload?.url) throw new Error("Não foi possível abrir o checkout.");
+    window.location.href = payload.url;
+  } finally {
+    els.billingCheckoutButton.disabled = false;
+    els.billingCheckoutButton.textContent = "Assinar Pro";
+  }
+}
+
+async function openBillingPortal() {
+  if (!els.billingPortalButton) return;
+  els.billingPortalButton.disabled = true;
+  els.billingPortalButton.textContent = "Abrindo...";
+  try {
+    const payload = await fetch("/api/billing/portal", { method: "POST" }).then(readJson);
+    if (!payload?.url) throw new Error("Não foi possível abrir o portal de assinatura.");
+    window.location.href = payload.url;
+  } finally {
+    els.billingPortalButton.disabled = false;
+    els.billingPortalButton.textContent = "Gerenciar assinatura";
+  }
+}
+
 async function cancelCurrentJob() {
   if (!state.jobId || !els.cancelButton) return;
   els.cancelButton.disabled = true;
@@ -6528,6 +6601,20 @@ els.youtubeConnectButton.addEventListener("click", () => {
   });
 });
 
+els.billingCheckoutButton?.addEventListener("click", () => {
+  startBillingCheckout().catch((error) => {
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error ? error.message : String(error);
+  });
+});
+
+els.billingPortalButton?.addEventListener("click", () => {
+  openBillingPortal().catch((error) => {
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error ? error.message : String(error);
+  });
+});
+
 els.youtubeUploadAllButton.addEventListener("click", () => {
   uploadAllOutputsToYoutube().catch((error) => {
     els.error.hidden = false;
@@ -6575,7 +6662,8 @@ els.history?.addEventListener("click", (event) => {
   });
 });
 
-if (new URLSearchParams(window.location.search).get("youtube") === "connected") {
+const initialParams = new URLSearchParams(window.location.search);
+if (initialParams.get("youtube") === "connected" || initialParams.has("billing")) {
   history.replaceState(null, "", window.location.pathname);
 }
 
@@ -6583,6 +6671,10 @@ refreshYoutubeStatus().catch((error) => {
   setYoutubeStatus(false, false);
   els.error.hidden = false;
   els.error.textContent = error instanceof Error ? error.message : String(error);
+});
+
+refreshBillingStatus().catch(() => {
+  setBillingStatus({ configured: false, status: "free", plan: "free" });
 });
 
 restoreLastJob().catch((error) => {

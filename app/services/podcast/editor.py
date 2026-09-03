@@ -134,6 +134,7 @@ def edit_podcast_output(
         subtitle_border_color=subtitle_border_color,
         subtitle_size=subtitle_size,
         subtitle_position=subtitle_position,
+        watermark_enabled=bool(output.get("watermark_enabled", True)),
     )
 
     edited_duration = render_result.get("duration") or _probe_duration(str(edit_video_path))
@@ -157,6 +158,7 @@ def edit_podcast_output(
         "subtitle_border_color": subtitle_border_color,
         "subtitle_size": subtitle_size,
         "subtitle_position": subtitle_position,
+        "watermark_enabled": bool(output.get("watermark_enabled", True)),
         "edited_from": output.get("id"),
         "edited_at": int(time.time()),
         "subtitle_edited_at": int(time.time()),
@@ -231,6 +233,7 @@ def _edit_podcast_output_from_source(
         subtitle_border_color=subtitle_border_color,
         subtitle_size=subtitle_size,
         subtitle_position=subtitle_position,
+        watermark_enabled=bool(output.get("watermark_enabled", True)),
     )
 
     edited_duration = render_result.get("duration") or _probe_duration(str(edit_video_path))
@@ -359,6 +362,7 @@ def edit_podcast_timeline_output(
         subtitle_border_color=subtitle_border_color,
         subtitle_size=subtitle_size,
         subtitle_position=subtitle_position,
+        watermark_enabled=bool(output.get("watermark_enabled", True)),
     )
 
     edited_duration = render_result.get("duration") or _probe_duration(str(edit_video_path))

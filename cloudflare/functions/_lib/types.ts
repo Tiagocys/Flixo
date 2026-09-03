@@ -69,6 +69,15 @@ export interface WorkerEnv {
   GEMINI_TTS_MODEL?: string;
   ELEVENLABS_APIKEY?: string;
   ELEVENLABS_API_KEY?: string;
+  STRIPE_PUBLISHABLE_KEY?: string;
+  STRIPE_PUBLIC_KEY?: string;
+  STRIPE_PUBLIC_TEST?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_SECRET_TEST?: string;
+  STRIPE_PRICE_ID?: string;
+  STRIPE_CLIPPER_BETA_PRICE_ID?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  STRIPE_WEBHOOK_SECRET_TEST?: string;
   MEDIA_ASSETS_TABLE?: string;
   R2_BUCKET?: string;
   R2_BUCKET_TOKEN?: string;

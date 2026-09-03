@@ -1,6 +1,8 @@
 import type { WorkerEnv } from "../../../../_lib/types";
 import { requireCurrentUser } from "../../../../_lib/auth";
 import { backendNotConfiguredResponse, moneyPrinterUrl } from "../../../../_lib/backend";
+import { getBillingCustomer } from "../../../../_lib/supabase";
+import { subscriptionStatusIsActive } from "../../../../_lib/stripe";
 
 export const onRequestPost: PagesFunction<WorkerEnv> = async ({ params, request, env }) => {
   const user = await requireCurrentUser(request, env);
@@ -8,6 +10,18 @@ export const onRequestPost: PagesFunction<WorkerEnv> = async ({ params, request,
   const id = String(params.id || "");
   const url = moneyPrinterUrl(env, request, `/podcast/jobs/${encodeURIComponent(id)}/render`);
   if (!url) return backendNotConfiguredResponse();
+  const bodyText = await request.text();
+  const billing = await getBillingCustomer(env, user.id).catch(() => null);
+  const isPro = subscriptionStatusIsActive(billing?.status);
+  let backendBody = bodyText;
+  try {
+    backendBody = JSON.stringify({
+      ...(JSON.parse(bodyText || "{}") as Record<string, unknown>),
+      watermark_enabled: !isPro,
+    });
+  } catch {
+    backendBody = bodyText;
+  }
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -17,7 +31,7 @@ export const onRequestPost: PagesFunction<WorkerEnv> = async ({ params, request,
         : {}),
       "X-Flixo-User-Id": user.id,
     },
-    body: await request.text(),
+    body: backendBody,
   });
   return new Response(response.body, {
     status: response.status,

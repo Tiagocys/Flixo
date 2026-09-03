@@ -32,6 +32,20 @@ export interface ClipperProjectRow {
   updated_at?: string | null;
 }
 
+export interface BillingCustomerRow {
+  user_id: string;
+  email?: string | null;
+  stripe_customer_id?: string | null;
+  stripe_subscription_id?: string | null;
+  stripe_price_id?: string | null;
+  status?: string | null;
+  current_period_end?: string | null;
+  cancel_at_period_end?: boolean | null;
+  metadata?: Record<string, unknown> | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 const memoryStore = (globalThis as unknown as {
   __mptJobs?: Map<string, JobRow>;
 }).__mptJobs ?? new Map<string, JobRow>();
@@ -65,7 +79,7 @@ function supabaseHeaders(env: WorkerEnv): Headers {
   return headers;
 }
 
-async function supabaseFetch(
+export async function supabaseFetch(
   env: WorkerEnv,
   path: string,
   init: RequestInit
@@ -74,9 +88,13 @@ async function supabaseFetch(
   if (!baseUrl) {
     throw new Error("SUPABASE_URL is not configured");
   }
+  const headers = supabaseHeaders(env);
+  new Headers(init.headers || {}).forEach((value, key) => {
+    headers.set(key, value);
+  });
   return fetch(`${baseUrl}/rest/v1/${path.replace(/^\/+/, "")}`, {
     ...init,
-    headers: supabaseHeaders(env),
+    headers,
   });
 }
 
@@ -90,6 +108,14 @@ function mediaAssetsTableName(env: WorkerEnv): string {
 
 function clipperProjectsTableName(env: WorkerEnv): string {
   return String(env.CLIPPER_PROJECTS_TABLE || "clipper_projects");
+}
+
+function billingCustomersTableName(env: WorkerEnv): string {
+  return String(env.BILLING_CUSTOMERS_TABLE || "billing_customers");
+}
+
+function stripeEventsTableName(env: WorkerEnv): string {
+  return String(env.STRIPE_EVENTS_TABLE || "stripe_events");
 }
 
 function isMissingSupabaseResource(response: Response): boolean {
@@ -183,6 +209,106 @@ export async function getClipperProject(
   }
   const rows = (await response.json()) as ClipperProjectRow[];
   return rows[0] || null;
+}
+
+export async function getBillingCustomer(
+  env: WorkerEnv,
+  userId: string
+): Promise<BillingCustomerRow | null> {
+  if (!isSupabaseConfigured(env)) return null;
+  const params = new URLSearchParams();
+  params.set("user_id", `eq.${userId}`);
+  params.set("select", "*");
+  params.set("limit", "1");
+  const response = await supabaseFetch(
+    env,
+    `${billingCustomersTableName(env)}?${params.toString()}`,
+    { method: "GET" }
+  );
+  if (!response.ok) {
+    if (isMissingSupabaseResource(response)) return null;
+    throw new Error(`failed to fetch billing customer: ${response.status}`);
+  }
+  const rows = (await response.json()) as BillingCustomerRow[];
+  return rows[0] || null;
+}
+
+export async function getBillingCustomerByStripeCustomerId(
+  env: WorkerEnv,
+  stripeCustomerId: string
+): Promise<BillingCustomerRow | null> {
+  if (!isSupabaseConfigured(env)) return null;
+  const params = new URLSearchParams();
+  params.set("stripe_customer_id", `eq.${stripeCustomerId}`);
+  params.set("select", "*");
+  params.set("limit", "1");
+  const response = await supabaseFetch(
+    env,
+    `${billingCustomersTableName(env)}?${params.toString()}`,
+    { method: "GET" }
+  );
+  if (!response.ok) {
+    if (isMissingSupabaseResource(response)) return null;
+    throw new Error(`failed to fetch billing customer by stripe customer: ${response.status}`);
+  }
+  const rows = (await response.json()) as BillingCustomerRow[];
+  return rows[0] || null;
+}
+
+export async function upsertBillingCustomer(
+  env: WorkerEnv,
+  row: BillingCustomerRow
+): Promise<BillingCustomerRow> {
+  if (!isSupabaseConfigured(env)) return row;
+  const now = new Date().toISOString();
+  const payload: BillingCustomerRow = {
+    ...row,
+    updated_at: now,
+  };
+  const response = await supabaseFetch(env, `${billingCustomersTableName(env)}?on_conflict=user_id`, {
+    method: "POST",
+    headers: new Headers([["Prefer", "resolution=merge-duplicates,return=representation"]]),
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    if (isMissingSupabaseResource(response)) return row;
+    throw new Error(`failed to upsert billing customer: ${response.status}`);
+  }
+  const rows = (await response.json()) as BillingCustomerRow[];
+  return rows[0] || payload;
+}
+
+export async function stripeEventProcessed(env: WorkerEnv, eventId: string): Promise<boolean> {
+  if (!isSupabaseConfigured(env)) return false;
+  const params = new URLSearchParams();
+  params.set("id", `eq.${eventId}`);
+  params.set("select", "id");
+  params.set("limit", "1");
+  const response = await supabaseFetch(env, `${stripeEventsTableName(env)}?${params.toString()}`, {
+    method: "GET",
+  });
+  if (!response.ok) return false;
+  const rows = (await response.json().catch(() => [])) as Array<{ id: string }>;
+  return rows.length > 0;
+}
+
+export async function insertStripeEvent(
+  env: WorkerEnv,
+  event: { id: string; type: string; data: Record<string, unknown> }
+): Promise<void> {
+  if (!isSupabaseConfigured(env)) return;
+  const response = await supabaseFetch(env, stripeEventsTableName(env), {
+    method: "POST",
+    body: JSON.stringify({
+      id: event.id,
+      type: event.type,
+      data: event.data,
+      processed_at: new Date().toISOString(),
+    }),
+  });
+  if (!response.ok && !isMissingSupabaseResource(response) && response.status !== 409) {
+    throw new Error(`failed to insert stripe event: ${response.status}`);
+  }
 }
 
 export async function listJobs(env: WorkerEnv, limit = 8, userId?: string): Promise<JobRow[]> {

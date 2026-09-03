@@ -44,6 +44,7 @@ class PodcastRenderRequest(BaseModel):
     subtitle_border_color: str = Field(default="black", pattern="^(black|white|yellow|blue|red)$")
     subtitle_size: str = Field(default="medium", pattern="^(small|medium|large)$")
     subtitle_position: str = Field(default="middle", pattern="^(top|middle|bottom)$")
+    watermark_enabled: bool = True
 
 
 class PodcastSubtitleUpdateRequest(BaseModel):
@@ -299,6 +300,7 @@ def render_podcast_job(
         body.subtitle_border_color,
         body.subtitle_size,
         body.subtitle_position,
+        body.watermark_enabled,
     )
     return _public_response(job_id, user_id=x_flixo_user_id)
 

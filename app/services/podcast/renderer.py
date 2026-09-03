@@ -33,6 +33,10 @@ _WATERMARK_ICON_FILE = os.getenv(
     "CLIPPER_WATERMARK_ICON_FILE",
     str(_PROJECT_ROOT / "cloudflare/pages/assets/watermark/copacabena-icon-white.png"),
 )
+_WATERMARK_LOGO_FILE = os.getenv(
+    "CLIPPER_WATERMARK_LOGO_FILE",
+    str(_PROJECT_ROOT / "cloudflare/pages/assets/copa-logo-branca.png"),
+)
 
 
 def render_podcast_clip(
@@ -52,6 +56,7 @@ def render_podcast_clip(
     subtitle_size: str = "medium",
     subtitle_position: str = "middle",
     visual_focus: dict | None = None,
+    watermark_enabled: bool = True,
 ) -> dict:
     duration = max(0.1, end - start)
     base = os.path.splitext(output_path)[0]
@@ -92,6 +97,7 @@ def render_podcast_clip(
         artificial_cuts=artificial_cuts,
         visual_focus=visual_focus,
         clip_format=clip_format,
+        watermark_enabled=watermark_enabled,
     )
     return {
         "video_path": output_path,
@@ -105,6 +111,7 @@ def render_podcast_clip(
         "subtitle_border_color": subtitle_border_color,
         "subtitle_size": subtitle_size,
         "subtitle_position": subtitle_position,
+        "watermark_enabled": watermark_enabled,
         "clip_format": clip_format,
     }
 
@@ -119,6 +126,7 @@ def reburn_podcast_subtitles(
     subtitle_border_color: str = "black",
     subtitle_size: str = "medium",
     subtitle_position: str = "middle",
+    watermark_enabled: bool = True,
 ) -> dict:
     if not os.path.isfile(camera_path):
         raise RuntimeError("Video base da camera nao encontrado. Renderize o short novamente.")
@@ -143,6 +151,7 @@ def reburn_podcast_subtitles(
         subtitle_position=subtitle_position,
         render_width=render_width,
         render_height=render_height,
+        watermark_enabled=watermark_enabled,
     )
     return {
         "video_path": output_path,
@@ -154,6 +163,7 @@ def reburn_podcast_subtitles(
         "subtitle_border_color": subtitle_border_color,
         "subtitle_size": subtitle_size,
         "subtitle_position": subtitle_position,
+        "watermark_enabled": watermark_enabled,
     }
 
 
@@ -334,6 +344,7 @@ def _format_podcast_vertical(
     artificial_cuts: bool,
     visual_focus: dict | None,
     clip_format: str = "auto",
+    watermark_enabled: bool = True,
 ) -> None:
     base = os.path.splitext(output_path)[0]
     camera_path = f"{base}.camera.mp4"
@@ -353,6 +364,7 @@ def _format_podcast_vertical(
         subtitle_position=subtitle_position,
         render_width=render_width,
         render_height=render_height,
+        watermark_enabled=watermark_enabled,
     )
 
 
@@ -490,6 +502,7 @@ def _apply_text_overlays(
     subtitle_position: str = "middle",
     render_width: int = 1080,
     render_height: int = 1920,
+    watermark_enabled: bool = True,
 ) -> None:
     video_filter = "[0:v]null[v]"
     map_video = "[v]"
@@ -510,12 +523,14 @@ def _apply_text_overlays(
         video_filter += f";[v]subtitles={_quote_filter_path(ass_path)}[vs]"
         map_video = "[vs]"
 
-    watermark_filter, watermark_input_args = _watermark_filter(
-        map_video,
-        render_width,
-        render_height,
-        subtitle_position,
-    )
+    watermark_filter, watermark_input_args = ("", [])
+    if watermark_enabled:
+        watermark_filter, watermark_input_args = _watermark_filter(
+            map_video,
+            render_width,
+            render_height,
+            subtitle_position,
+        )
     if watermark_filter:
         video_filter += f";{watermark_filter}"
         map_video = "[vw]"
@@ -644,15 +659,42 @@ def _watermark_filter(
     render_height: int = 1920,
     subtitle_position: str = "middle",
 ) -> tuple[str, list[str]]:
-    if not _WATERMARK_ENABLED or not _WATERMARK_TEXT:
+    if not _WATERMARK_ENABLED:
         return "", []
     base = max(1, min(render_width, render_height))
-    font_size = max(24, int(base * 0.04))
-    icon_size = max(40, int(base * 0.055))
-    gap = max(10, int(base * 0.012))
     margin = max(30, int(base * 0.04))
     subtitle_position = normalize_subtitle_position(subtitle_position)
     is_bottom_watermark = subtitle_position == "top"
+    logo_path = _existing_watermark_logo_file()
+    if logo_path:
+        logo_width = max(520, min(int(render_width * 0.62), 700))
+        logo_height_estimate = max(110, int(logo_width / 2.8))
+        if render_width == 1080 and render_height == 1920:
+            square_top = _SQUARE_TOP
+            square_bottom = _SQUARE_TOP + 1080
+            anchor = square_bottom if is_bottom_watermark else square_top
+            y = max(0, int(anchor - (logo_height_estimate / 2)))
+        else:
+            y = render_height - logo_height_estimate - margin if is_bottom_watermark else margin
+        slide_seconds = "0.72"
+        final_x = f"(main_w-overlay_w)/2"
+        x = (
+            f"if(lt(t\\,{slide_seconds})\\,"
+            f"-overlay_w+(t/{slide_seconds})*(overlay_w+{final_x})\\,"
+            f"{final_x})"
+        )
+        logo_filter = (
+            f"[1:v]format=rgba,scale={logo_width}:-1:force_original_aspect_ratio=decrease[wm_logo];"
+            f"{input_label}[wm_logo]overlay=x='{x}':y={y}:format=auto:shortest=1[vw]"
+        )
+        input_args = ["-loop", "1", "-framerate", "30", "-i", logo_path]
+        return logo_filter, input_args
+
+    if not _WATERMARK_TEXT:
+        return "", []
+    font_size = max(24, int(base * 0.04))
+    icon_size = max(40, int(base * 0.055))
+    gap = max(10, int(base * 0.012))
     y = render_height - icon_size - margin if is_bottom_watermark else margin
     text_y = y + max(0, int((icon_size - font_size) / 2) - 2)
     text_width_estimate = max(font_size * 4, int(len(_WATERMARK_TEXT) * font_size * 0.58))
@@ -688,6 +730,20 @@ def _watermark_filter(
     )
     input_args = ["-loop", "1", "-framerate", "30", "-i", _WATERMARK_ICON_FILE]
     return icon_filter, input_args
+
+
+def _existing_watermark_logo_file() -> str:
+    candidates = [
+        _WATERMARK_LOGO_FILE,
+        str(_PROJECT_ROOT / "cloudflare/pages/assets/copa-logo-branca.png"),
+        str(_PROJECT_ROOT / "cloudflare/pages/assets/capa-logo-branca.png"),
+        str(_PROJECT_ROOT / "cloudflare/pages/assets/capa-logo-branca.svg"),
+        str(_PROJECT_ROOT / "cloudflare/pages/assets/copa-logo-branca.svg"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return ""
 
 
 def _escape_drawtext_value(value: str) -> str:

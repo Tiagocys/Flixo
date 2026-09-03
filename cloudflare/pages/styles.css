@@ -3547,7 +3547,8 @@ body.clipper-ui-busy::before {
   min-width: 0;
 }
 
-.youtube-account-status {
+.youtube-account-status,
+.billing-account-status {
   display: grid;
   gap: 8px;
   min-width: min(260px, 100%);
@@ -3557,7 +3558,8 @@ body.clipper-ui-busy::before {
   background: #f8fafc;
 }
 
-.youtube-account-status p {
+.youtube-account-status p,
+.billing-account-status p {
   margin: 0;
   color: var(--text);
   font-size: 0.86rem;
@@ -3566,9 +3568,38 @@ body.clipper-ui-busy::before {
   text-align: center;
 }
 
-.youtube-account-status button {
+.billing-account-status .billing-beta-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.billing-legal-links {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.billing-legal-links a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.billing-legal-links a:hover {
+  text-decoration: underline;
+}
+
+.youtube-account-status button,
+.billing-account-status button {
   width: 100%;
   justify-content: center;
+}
+
+.billing-actions {
+  display: grid;
+  gap: 8px;
 }
 
 .stage-progress {
@@ -5601,6 +5632,11 @@ a.secondary-button.is-disabled {
   line-height: 1.55;
 }
 
+.clipper-modal-body a {
+  color: var(--accent);
+  font-weight: 800;
+}
+
 .clipper-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -5614,6 +5650,52 @@ a.secondary-button.is-disabled {
 
 .history-card-content {
   min-width: 0;
+}
+
+.legal-body {
+  background: #ffffff;
+}
+
+.legal-shell {
+  width: min(920px, calc(100vw - 32px));
+}
+
+.legal-topbar {
+  margin-bottom: 22px;
+}
+
+.legal-topbar h1 {
+  max-width: 760px;
+}
+
+.legal-topbar p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.legal-card {
+  display: grid;
+  gap: 22px;
+  padding: 28px;
+}
+
+.legal-card section {
+  display: grid;
+  gap: 8px;
+}
+
+.legal-card h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 1.08rem;
+  line-height: 1.25;
+}
+
+.legal-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
 }
 
 .history-card-content > strong {
