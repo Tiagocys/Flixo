@@ -1,7 +1,8 @@
 import type { WorkerEnv } from "../../_lib/types";
 import { requireCurrentUser } from "../../_lib/auth";
 import { backendNotConfiguredResponse, moneyPrinterUrl } from "../../_lib/backend";
-import { listClipperProjects } from "../../_lib/supabase";
+import { getBillingCustomer, listClipperProjects } from "../../_lib/supabase";
+import { subscriptionStatusIsActive } from "../../_lib/stripe";
 
 function emptyJobsResponse() {
   return Response.json({ status: 200, data: { jobs: [] }, jobs: [] });
@@ -34,6 +35,41 @@ function processingUnavailableResponse() {
   );
 }
 
+function saoPauloDateKey(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+async function userIsPro(env: WorkerEnv, userId: string): Promise<boolean> {
+  const billing = await getBillingCustomer(env, userId).catch(() => null);
+  return subscriptionStatusIsActive(billing?.status);
+}
+
+async function enforceFreeDailyProjectLimit(env: WorkerEnv, userId: string): Promise<Response | null> {
+  if (await userIsPro(env, userId)) return null;
+  const today = saoPauloDateKey(new Date());
+  const projects = await listClipperProjects(env, 50, userId).catch(() => []);
+  const hasProjectToday = projects.some((project) => saoPauloDateKey(project.created_at || "") === today);
+  if (!hasProjectToday) return null;
+  return Response.json(
+    {
+      error: "Limite diário do plano gratuito.",
+      message:
+        "No plano gratuito, você pode iniciar 1 projeto por dia. Tente novamente amanhã ou assine o Pro para liberar mais projetos.",
+      data: { free_daily_project_limit: true },
+    },
+    { status: 429 }
+  );
+}
+
 export const onRequestGet: PagesFunction<WorkerEnv> = async ({ request, env }) => {
   const user = await requireCurrentUser(request, env);
   if (user instanceof Response) return user;
@@ -60,6 +96,8 @@ export const onRequestGet: PagesFunction<WorkerEnv> = async ({ request, env }) =
 export const onRequestPost: PagesFunction<WorkerEnv> = async ({ request, env }) => {
   const user = await requireCurrentUser(request, env);
   if (user instanceof Response) return user;
+  const limitResponse = await enforceFreeDailyProjectLimit(env, user.id);
+  if (limitResponse) return limitResponse;
   const url = moneyPrinterUrl(env, request, "/podcast/jobs");
   if (!url) return backendNotConfiguredResponse();
   const response = await fetch(url, {

@@ -17,6 +17,7 @@ const state = {
   uiBusyCount: 0,
   actionLocked: false,
   renderSelectionLocked: false,
+  freeRenderNoticeJobIds: new Set(),
   youtubeAuthorized: false,
   youtubeConfigured: false,
   billing: null,
@@ -45,6 +46,7 @@ const els = {
   outputs: document.getElementById("podcast-outputs"),
   youtubeStatusMeta: document.getElementById("podcast-youtube-status-meta"),
   youtubeConnectButton: document.getElementById("podcast-youtube-connect-button"),
+  billingAccountStatus: document.querySelector(".billing-account-status"),
   billingStatusMeta: document.getElementById("billing-status-meta"),
   billingCheckoutButton: document.getElementById("billing-checkout-button"),
   billingPortalButton: document.getElementById("billing-portal-button"),
@@ -115,6 +117,9 @@ async function requireUserActionAuth() {
 }
 
 function renderVisitorAuthState() {
+  if (els.billingAccountStatus) {
+    els.billingAccountStatus.hidden = true;
+  }
   if (els.youtubeStatusMeta) {
     els.youtubeStatusMeta.textContent = "Entre para conectar seu canal do YouTube.";
   }
@@ -133,6 +138,11 @@ function renderVisitorAuthState() {
   if (els.billingPortalButton) {
     els.billingPortalButton.hidden = true;
   }
+}
+
+function billingPlanIsPro(payload = state.billing) {
+  const status = String(payload?.status || "free").toLowerCase();
+  return payload?.plan === "pro" || ["active", "trialing"].includes(status);
 }
 
 const COVER_TEMPLATE_OPTIONS = [
@@ -3709,6 +3719,9 @@ async function connectYoutube() {
 
 function setBillingStatus(payload) {
   state.billing = payload || null;
+  if (els.billingAccountStatus) {
+    els.billingAccountStatus.hidden = true;
+  }
   if (!els.billingStatusMeta) return;
   const status = String(payload?.status || "free").toLowerCase();
   const isPro = payload?.plan === "pro" || ["active", "trialing"].includes(status);
@@ -3734,6 +3747,27 @@ function setBillingStatus(payload) {
 async function refreshBillingStatus() {
   const payload = await fetch("/api/billing/status").then(readJson);
   setBillingStatus(payload);
+  return payload;
+}
+
+async function ensureBillingStatus() {
+  if (state.billing) return state.billing;
+  return refreshBillingStatus().catch(() => ({ configured: false, status: "free", plan: "free" }));
+}
+
+async function confirmFreeRenderIfNeeded() {
+  const billing = await ensureBillingStatus();
+  if (billingPlanIsPro(billing)) return true;
+  if (state.freeRenderNoticeJobIds.has(state.jobId)) return true;
+  const confirmed = await confirmAction({
+    title: "Continuar no plano gratuito?",
+    message:
+      "Os cortes deste projeto serão renderizados com a marca d'água do Copacabena. No plano gratuito, você também pode iniciar apenas 1 projeto por dia. Deseja continuar?",
+    confirmLabel: "Continuar com marca d'água",
+    cancelLabel: "Cancelar",
+  });
+  if (confirmed) state.freeRenderNoticeJobIds.add(state.jobId);
+  return confirmed;
 }
 
 async function startBillingCheckout() {
@@ -6591,6 +6625,7 @@ els.renderButton.addEventListener("click", async () => {
     syncCandidateSelectionState(state.job);
     return;
   }
+  if (!(await confirmFreeRenderIfNeeded())) return;
 
   els.renderButton.disabled = true;
   els.renderButton.textContent = "Renderizando...";
