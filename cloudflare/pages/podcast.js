@@ -89,6 +89,52 @@ const STAGE_MESSAGES = {
   done: "Cortes editáveis prontos.",
 };
 
+function hasLocalAuthSession() {
+  return Boolean(window.FlixoAuth?.readSession?.());
+}
+
+function redirectToAuth() {
+  if (window.FlixoAuth?.redirectToLogin) {
+    window.FlixoAuth.redirectToLogin();
+    return;
+  }
+  const next = `${window.location.pathname}${window.location.search}`;
+  window.location.href = `/login.html?next=${encodeURIComponent(next)}`;
+}
+
+async function requireUserActionAuth() {
+  if (!hasLocalAuthSession()) {
+    redirectToAuth();
+    return false;
+  }
+  const user = await window.FlixoAuth?.currentUser?.().catch(() => null);
+  if (user) return true;
+  window.FlixoAuth?.clearSession?.();
+  redirectToAuth();
+  return false;
+}
+
+function renderVisitorAuthState() {
+  if (els.youtubeStatusMeta) {
+    els.youtubeStatusMeta.textContent = "Entre para conectar seu canal do YouTube.";
+  }
+  if (els.youtubeConnectButton) {
+    els.youtubeConnectButton.disabled = false;
+    const label = els.youtubeConnectButton.querySelector("span:last-child");
+    if (label) label.textContent = "Entrar para conectar";
+  }
+  if (els.billingStatusMeta) {
+    els.billingStatusMeta.textContent = "Entre para acessar seus projetos e plano.";
+  }
+  if (els.billingCheckoutButton) {
+    els.billingCheckoutButton.disabled = false;
+    els.billingCheckoutButton.textContent = "Entrar para assinar";
+  }
+  if (els.billingPortalButton) {
+    els.billingPortalButton.hidden = true;
+  }
+}
+
 const COVER_TEMPLATE_OPTIONS = [
   ["classic", "Clássico"],
   ["impact", "Impacto"],
@@ -6492,6 +6538,7 @@ els.outputs.addEventListener("loadedmetadata", (event) => {
 
 els.form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!(await requireUserActionAuth())) return;
   const formData = new FormData();
   const url = els.url.value.trim();
   const file = els.file.files?.[0] || null;
@@ -6535,6 +6582,7 @@ els.form.addEventListener("submit", async (event) => {
 });
 
 els.renderButton.addEventListener("click", async () => {
+  if (!(await requireUserActionAuth())) return;
   if (!state.jobId) return;
   const selectedIds = selectedCandidateIds();
   if (!selectedIds.length) {
@@ -6595,28 +6643,40 @@ els.renderButton.addEventListener("click", async () => {
 });
 
 els.youtubeConnectButton.addEventListener("click", () => {
-  connectYoutube().catch((error) => {
+  requireUserActionAuth().then((isAuthenticated) => {
+    if (!isAuthenticated) return;
+    return connectYoutube();
+  }).catch((error) => {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
   });
 });
 
 els.billingCheckoutButton?.addEventListener("click", () => {
-  startBillingCheckout().catch((error) => {
+  requireUserActionAuth().then((isAuthenticated) => {
+    if (!isAuthenticated) return;
+    return startBillingCheckout();
+  }).catch((error) => {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
   });
 });
 
 els.billingPortalButton?.addEventListener("click", () => {
-  openBillingPortal().catch((error) => {
+  requireUserActionAuth().then((isAuthenticated) => {
+    if (!isAuthenticated) return;
+    return openBillingPortal();
+  }).catch((error) => {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
   });
 });
 
 els.youtubeUploadAllButton.addEventListener("click", () => {
-  uploadAllOutputsToYoutube().catch((error) => {
+  requireUserActionAuth().then((isAuthenticated) => {
+    if (!isAuthenticated) return;
+    return uploadAllOutputsToYoutube();
+  }).catch((error) => {
     els.error.hidden = false;
     els.error.textContent = error instanceof Error ? error.message : String(error);
   });
@@ -6667,22 +6727,26 @@ if (initialParams.get("youtube") === "connected" || initialParams.has("billing")
   history.replaceState(null, "", window.location.pathname);
 }
 
-refreshYoutubeStatus().catch((error) => {
-  setYoutubeStatus(false, false);
-  els.error.hidden = false;
-  els.error.textContent = error instanceof Error ? error.message : String(error);
-});
+if (hasLocalAuthSession()) {
+  refreshYoutubeStatus().catch((error) => {
+    setYoutubeStatus(false, false);
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error ? error.message : String(error);
+  });
 
-refreshBillingStatus().catch(() => {
-  setBillingStatus({ configured: false, status: "free", plan: "free" });
-});
+  refreshBillingStatus().catch(() => {
+    setBillingStatus({ configured: false, status: "free", plan: "free" });
+  });
 
-restoreLastJob().catch((error) => {
-  els.error.hidden = false;
-  els.error.textContent = error instanceof Error ? error.message : String(error);
-});
+  restoreLastJob().catch((error) => {
+    els.error.hidden = false;
+    els.error.textContent = error instanceof Error ? error.message : String(error);
+  });
 
-loadHistory().catch((error) => {
-  if (!els.historyMeta) return;
-  els.historyMeta.textContent = error instanceof Error ? error.message : "Não foi possível carregar o histórico.";
-});
+  loadHistory().catch((error) => {
+    if (!els.historyMeta) return;
+    els.historyMeta.textContent = error instanceof Error ? error.message : "Não foi possível carregar o histórico.";
+  });
+} else {
+  renderVisitorAuthState();
+}

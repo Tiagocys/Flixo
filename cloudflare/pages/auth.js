@@ -1,5 +1,13 @@
 const FLIXO_AUTH_KEY = "flixo.auth.session";
-const PUBLIC_PATHS = new Set(["/login", "/login.html", "/auth/callback", "/auth/callback.html"]);
+const PUBLIC_PATHS = new Set([
+  "/",
+  "/clipper",
+  "/clipper.html",
+  "/login",
+  "/login.html",
+  "/auth/callback",
+  "/auth/callback.html",
+]);
 const AUTH_REFRESH_MARGIN_SECONDS = 60;
 let refreshPromise = null;
 
@@ -175,16 +183,16 @@ function escapeHtml(value) {
 }
 
 async function requireSession() {
-  if (isPublicPath()) return;
+  const publicPath = isPublicPath();
   const session = await ensureFreshSession();
   if (!session) {
-    redirectToLogin();
+    if (!publicPath) redirectToLogin();
     return;
   }
   const user = await currentUser();
   if (!user) {
     clearSession();
-    redirectToLogin();
+    if (!publicPath) redirectToLogin();
     return;
   }
   window.FlixoAuth.user = user;
@@ -199,6 +207,7 @@ window.FlixoAuth = {
   currentUser,
   authHeader,
   refreshSession,
+  redirectToLogin,
   user: null,
 };
 
